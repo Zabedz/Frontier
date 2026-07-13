@@ -44,6 +44,12 @@ def run(
     config_root: Annotated[Path, typer.Option("--config-root", help="Config root.")] = Path(
         "configs"
     ),
+    skip_latency: Annotated[
+        bool,
+        typer.Option(
+            "--skip-latency", help="Skip the latency/memory rig (leave those fields empty)."
+        ),
+    ] = False,
 ) -> None:
     """Resolve, score, and append one row per seed."""
     rows = run_pipeline(
@@ -52,6 +58,7 @@ def run(
         mode=_parse_mode(mode),
         config_root=config_root,
         results_root=results,
+        measure_latency=not skip_latency,
     )
     _summarise(rows, results)
 

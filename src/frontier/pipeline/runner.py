@@ -6,9 +6,10 @@ provenance, and appends one ``ResultRow`` to the store. The provider factory and
 slice loader are injectable, so a CPU test drives the whole chain with a synthetic
 provider and in-memory records: no model, no network.
 
-The four deferred fields are stated once here: ``perplexity`` and ``tok_s_per_gb`` are
-``NaN`` (no held-out corpus, no throughput yet) and ``latency`` / ``memory`` are empty.
-The row still constructs and validates; the latency-rig WP fills them.
+``perplexity`` stays ``NaN`` (no held-out corpus yet). ``latency``, ``memory``, and
+``tok_s_per_gb`` are filled once per run by the injectable ``latency_probe`` (the real
+``default_latency`` rig by default); ``measure_latency=False`` restores the empty /
+``NaN`` fields for a secondary profile joined to the primary run in analysis.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from frontier.eval.provider import LogitProvider
 from frontier.eval.records import EvalRecord
 from frontier.io.provenance import hardware_info, now_utc_iso, read_git_sha, stamp_provenance
 from frontier.io.store import ResultStore, append_row
+from frontier.latency.rig import LatencyMemory, default_latency
 from frontier.metrics.bootstrap import accuracy_ci, ece_ci
 from frontier.metrics.report import calibration_report, to_quality
 from frontier.pipeline.config import DEFAULT_CONFIG_ROOT, ResolvedConfig, resolve_config
@@ -41,6 +43,19 @@ class SliceLoader(Protocol):
     """Loads the eval slice for a spec and seed."""
 
     def __call__(self, spec: EvalSpec, *, seed: int) -> list[EvalRecord]: ...
+
+
+class LatencyProbe(Protocol):
+    """Measures the latency/memory record for a loaded provider on a device."""
+
+    def __call__(
+        self,
+        provider: LogitProvider,
+        resolved: ResolvedConfig,
+        *,
+        device: str,
+        mode: RunMode,
+    ) -> LatencyMemory: ...
 
 
 def load_slice(spec: EvalSpec, *, seed: int) -> list[EvalRecord]:
@@ -71,11 +86,17 @@ def run(
     provider_factory: ProviderFactory | None = None,
     slice_loader: SliceLoader | None = None,
     git_sha: str | None = None,
+    latency_probe: LatencyProbe | None = None,
+    measure_latency: bool = True,
 ) -> list[ResultRow]:
     """Resolve config, score, compute metrics, assemble one row per seed, append.
 
     One row per seed in ``eval_spec.seeds`` (smoke has ``[0]`` -> one row). The provider
     is built once and reused across seeds, because the model load is the expensive step.
+    Latency and memory are a property of the variant and the hardware, not of an eval
+    seed, so they are measured once (before the seed loop) and shared across the rows;
+    ``measure_latency=False`` (CLI ``--skip-latency``) leaves those fields empty for a
+    secondary profile that will be joined to the primary run's latency in analysis.
     Returns the appended rows in seed order.
     """
     resolved = resolve_config(
@@ -91,6 +112,12 @@ def run(
     store = ResultStore(results_root)
     hardware = hardware_info(device=device)
     sha = git_sha if git_sha is not None else read_git_sha()
+
+    if measure_latency:
+        probe = latency_probe or default_latency
+        lat_mem = probe(provider, resolved, device=device, mode=mode)
+    else:
+        lat_mem = LatencyMemory(latency=[], memory=[], tok_s_per_gb=math.nan)
 
     rows: list[ResultRow] = []
     for seed in resolved.eval_spec.seeds:
@@ -127,9 +154,9 @@ def run(
             family=resolved.variant.family,
             task=to_task_spec(resolved.eval_spec, num_items=len(records)),
             quality=quality,
-            latency=[],
-            memory=[],
-            tok_s_per_gb=math.nan,
+            latency=lat_mem.latency,
+            memory=lat_mem.memory,
+            tok_s_per_gb=lat_mem.tok_s_per_gb,
             robustness=to_robustness(out.robustness),
         )
         append_row(row, store)

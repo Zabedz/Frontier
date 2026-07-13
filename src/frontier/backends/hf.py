@@ -180,6 +180,15 @@ class HFLogitProvider:
         """The installed ``transformers`` version, or ``"unknown"`` before load."""
         return self._backend_version
 
+    def loaded_model(self) -> tuple[Any, Any]:
+        """Ensure the model is loaded and return ``(model, tokenizer)`` for the rig.
+
+        The latency rig drives timed generation on these same weights, so the model
+        loads once for both scoring and timing rather than a second time.
+        """
+        self._ensure_loaded()
+        return self._model, self._tokenizer
+
     def candidate_token_ids(self, letters: Sequence[str]) -> IntArray:
         """One answer-position token id per letter, cached per letter tuple."""
         self._ensure_loaded()

@@ -7,6 +7,7 @@ runner must land one schema-valid, fully-populated row in a ``tmp_path`` store.
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 
@@ -79,5 +80,14 @@ def test_cpu_smoke_end_to_end(tmp_path: Path) -> None:
     assert np.isfinite(row.quality.ece_equal_width)
     assert row.task.num_items == len(_ITEMS)
     assert row.provenance.hardware_id.startswith("cpu:")
+
+    # The real CPU latency rig fills the row: smoke pins batch [1], context [128].
+    assert len(row.latency) == 1
+    assert len(row.memory) == 1
+    latency = row.latency[0]
+    assert math.isfinite(latency.ttft_median_ms) and latency.ttft_median_ms > 0.0
+    assert math.isfinite(latency.itl_median_ms) and latency.itl_median_ms > 0.0
+    assert latency.machine_state is not None
+    assert math.isfinite(row.tok_s_per_gb)
 
     assert len(read_rows(ResultStore(tmp_path))) == 1

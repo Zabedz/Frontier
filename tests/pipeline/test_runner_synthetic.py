@@ -13,14 +13,18 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 
+from frontier.eval.provider import LogitProvider
 from frontier.eval.records import LETTERS, EvalRecord
 from frontier.io.store import ResultStore, read_rows
+from frontier.latency.rig import LatencyMemory
+from frontier.pipeline.config import ResolvedConfig
 from frontier.pipeline.runner import run
-from frontier.schema import EvalSpec, VariantConfig
+from frontier.schema import EvalSpec, Latency, MachineState, Memory, RunMode, VariantConfig
 
 CONFIG_ROOT = Path(__file__).resolve().parents[2] / "configs"
 FP16 = CONFIG_ROOT / "variants" / "fp16.yaml"
 GOLD_MARK = "<<GOLD>>"
+CANNED_SM_MHZ = 1500
 FloatArray = npt.NDArray[np.float64]
 IntArray = npt.NDArray[np.intp]
 _LETTER_INDEX = {letter: i for i, letter in enumerate(LETTERS)}
@@ -49,6 +53,44 @@ class _SyntheticProvider:
                 row[position] = 2.0 if GOLD_MARK in line else 0.0
                 position += 1
         return row
+
+
+def _canned_latency(
+    provider: LogitProvider,  # noqa: ARG001
+    resolved: ResolvedConfig,  # noqa: ARG001
+    *,
+    device: str,  # noqa: ARG001
+    mode: RunMode,  # noqa: ARG001
+) -> LatencyMemory:
+    """A model-free, network-free stand-in for the real latency rig."""
+    machine = MachineState(
+        gpu_clock_sm_mhz=CANNED_SM_MHZ,
+        gpu_clock_mem_mhz=6000,
+        gpu_temp_c=61,
+        power_w=118.5,
+        clocks_locked=False,
+        clock_drift_flag=False,
+    )
+    latency = Latency(
+        batch_size=1,
+        ttft_median_ms=10.0,
+        ttft_p95_ms=12.0,
+        itl_median_ms=3.0,
+        itl_p95_ms=4.0,
+        throughput_tok_s=200.0,
+        n_trials=3,
+        warmup_discarded=1,
+        machine_state=machine,
+    )
+    memory = Memory(
+        batch_size=1,
+        context_len=128,
+        peak_vram_mb=900.0,
+        weights_disk_mb=500.0,
+        weights_resident_mb=520.0,
+        kv_cache_mb=12.0,
+    )
+    return LatencyMemory(latency=[latency], memory=[memory], tok_s_per_gb=222.0)
 
 
 def _records(n: int) -> list[EvalRecord]:
@@ -80,6 +122,7 @@ def test_synthetic_runner_emits_one_valid_row(tmp_path: Path) -> None:
         slice_loader=loader,
         timestamp="2026-07-13T00:00:00+00:00",
         git_sha="deadbeef",
+        latency_probe=_canned_latency,
     )
 
     assert len(rows) == 1
@@ -101,12 +144,40 @@ def test_synthetic_runner_emits_one_valid_row(tmp_path: Path) -> None:
     assert math.isnan(row.quality.perplexity)
 
     assert row.robustness is not None
-    assert row.latency == []
-    assert row.memory == []
-    assert math.isnan(row.tok_s_per_gb)
+    assert row.latency
+    assert row.latency[0].machine_state is not None
+    assert row.memory
+    assert math.isfinite(row.tok_s_per_gb)
 
     stored = read_rows(ResultStore(tmp_path))
     assert len(stored) == 1
     assert stored[0].backend.backend_version == "synthetic-1.0"
     assert stored[0].provenance.git_sha == "deadbeef"
     assert math.isnan(stored[0].quality.perplexity)
+    assert stored[0].latency[0].machine_state.gpu_clock_sm_mhz == CANNED_SM_MHZ
+
+
+def test_synthetic_runner_skips_latency_when_disabled(tmp_path: Path) -> None:
+    def factory(variant: VariantConfig, device: str) -> _SyntheticProvider:  # noqa: ARG001
+        return _SyntheticProvider()
+
+    def loader(spec: EvalSpec, *, seed: int) -> list[EvalRecord]:  # noqa: ARG001
+        return _records(16)
+
+    rows = run(
+        FP16,
+        mode="smoke",
+        config_root=CONFIG_ROOT,
+        results_root=tmp_path,
+        provider_factory=factory,
+        slice_loader=loader,
+        timestamp="2026-07-13T00:00:00+00:00",
+        git_sha="deadbeef",
+        measure_latency=False,
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.latency == []
+    assert row.memory == []
+    assert math.isnan(row.tok_s_per_gb)
