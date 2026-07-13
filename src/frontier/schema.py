@@ -105,6 +105,24 @@ class Quality:
 
 
 @dataclass(frozen=True, slots=True)
+class Robustness:
+    """Permutation sensitivity of the calibration instrument (methodology section 2).
+
+    The letter-selection confound moves with compression, so its magnitude is
+    reported alongside the calibration battery rather than folded into it.
+    ``permutation_consistency`` is the mean fraction of cyclic option orders whose
+    raw answer already matched the debiased answer, ``letter_bias`` is how far the
+    estimated per-letter-position prior sits from uniform, and ``debias_flip_rate``
+    is the fraction of items whose answer the debiasing changed. It is ``None`` on a
+    row whose eval used ``permutation_scheme="none"``.
+    """
+
+    permutation_consistency: float
+    letter_bias: float
+    debias_flip_rate: float
+
+
+@dataclass(frozen=True, slots=True)
 class MachineState:
     """GPU clock and thermal state at measurement time.
 
@@ -161,6 +179,7 @@ class ResultRow:
     latency: list[Latency]
     memory: list[Memory]
     tok_s_per_gb: float
+    robustness: Robustness | None = None
 
 
 # ---------------------------------------------------------------------------
