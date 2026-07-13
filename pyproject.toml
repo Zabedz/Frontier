@@ -36,6 +36,18 @@ oracles = [
     "netcal>=1.3.6",        # equal-mass / adaptive ECE oracle (frozen upstream; pin)
 ]
 
+# HF Track-A backend (transformers + torch). Out of base so `uv sync` stays light on
+# a laptop; installed with `uv sync --group hf`. torch is already resolved via the
+# oracles group (torchmetrics), so re-listing it here does not change resolution, only
+# makes the group self-sufficient. transformers floors at 5.0: the backend uses the
+# 5.x `dtype=` kwarg on from_pretrained. The backend imports transformers lazily, so
+# base CI (without this group) still imports frontier.backends.hf.
+hf = [
+    "torch>=2.5",
+    "transformers>=5.0",
+    "accelerate>=0.34",
+]
+
 # The GPU-only stack is intentionally not here. Its versions are pinned against the
 # real CUDA driver on the pod, not resolved on a laptop, so it is documented in
 # docs/pod-setup.md and added to this file at pod-provision time (WP4).
@@ -109,8 +121,11 @@ show_error_codes = true
 files = ["src", "tests"]
 
 [[tool.mypy.overrides]]
-# Third-party stacks that ship no type information. Silence missing-import errors
-# for these only; our own code stays strict.
+# Heavy third-party stacks treated as untyped boundaries: lazily imported model,
+# quantiser, and serving libraries plus the columnar store. `follow_imports = skip`
+# keeps the result identical whether or not the stack is installed (transformers 5.x
+# ships partial py.typed hints, so without skip the strict check would pass on a base
+# checkout but fail once the `hf` group is present). Our own code stays strict.
 module = [
     "netcal.*",
     "vllm.*",
@@ -121,9 +136,12 @@ module = [
     "llama_cpp.*",
     "datasets.*",
     "transformers.*",
+    "accelerate.*",
     "peft.*",
     "trl.*",
+    "pyarrow.*",
 ]
+follow_imports = "skip"
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------

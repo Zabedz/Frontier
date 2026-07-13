@@ -15,7 +15,7 @@ version against current releases before pinning (the toolchain moved a lot throu
 ```toml
 gpu = [
     "torch>=2.5",             # install from the CUDA index matching the pod driver
-    "transformers>=4.44",
+    "transformers>=5.0",      # matches the CPU `hf` group; the backend uses the 5.x dtype= API
     "accelerate>=0.33",
     "peft>=0.12",
     "trl>=0.11",              # GKD trainer, for the single online reference run only

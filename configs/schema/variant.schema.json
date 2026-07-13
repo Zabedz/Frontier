@@ -5,7 +5,7 @@
   "description": "One variant. The runner deep-merges base.yaml, then this file, then smoke.yaml when --mode smoke. A variant is fully defined by data; adding one is adding a file.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["name", "family", "track"],
+  "required": ["name", "family", "track", "backend"],
   "properties": {
     "name": { "type": "string" },
     "family": { "enum": ["baseline", "ptq", "qat", "distill"] },
@@ -23,6 +23,7 @@
     "backend": {
       "type": "object",
       "additionalProperties": false,
+      "required": ["inference_backend", "weight_dtype", "kv_cache_dtype", "gpu_offload_layers"],
       "properties": {
         "inference_backend": { "enum": ["hf", "vllm", "llama_cpp", "torchao"] },
         "weight_dtype": { "type": "string" },

@@ -54,6 +54,8 @@ Package layout under `src/frontier/`:
 - `metrics/`    calibration (ECE variants, Brier + decomposition, reliability),
                 bootstrap CIs, perplexity. Pure CPU. Heaviest test coverage.
 - `eval/`       task loaders, prompt building, confidence extraction, correctness.
+- `backends/`   inference backends that satisfy the eval logit seam (HF Track-A now;
+                vLLM, llama.cpp, torchao later). Model loading lives here, never in `eval/`.
 - `quantize/`   PTQ producers (llm-compressor GPTQ/AWQ, bnb, torchao, GGUF) and QAT.
 - `distill/`    offline teacher top-k cache + student training (KD losses).
 - `latency/`    TTFT / inter-token timing, memory + machine-state capture.

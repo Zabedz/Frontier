@@ -8,6 +8,7 @@ model:
 
 eval:
   subset_size: 50
+  labels: raw               # load one cais/mmlu config, not the 57 MMLU-Redux subject configs
   seeds: [0]
 
 latency:
