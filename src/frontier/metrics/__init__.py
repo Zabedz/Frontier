@@ -3,3 +3,63 @@ decomposition, reliability curves), perplexity, and paired bootstrap confidence
 intervals. Pure CPU, oracle-checked against torchmetrics / netcal / sklearn on
 synthetic fixtures. This package carries the heaviest test coverage in the repo.
 """
+
+from __future__ import annotations
+
+from frontier.metrics._array import check_confidence, check_predictions
+from frontier.metrics.binning import BinScheme
+from frontier.metrics.bootstrap import (
+    DEFAULT_RESAMPLES,
+    ConfidenceInterval,
+    accuracy_ci,
+    ece_ci,
+    paired_delta_accuracy_ci,
+    paired_delta_ece_ci,
+)
+from frontier.metrics.calibration import (
+    DEFAULT_BINS,
+    DEFAULT_SWEEP,
+    ReliabilityCurve,
+    Weighting,
+    ece,
+    ece_equal_mass,
+    ece_equal_width,
+    ece_from_confidence,
+    ece_sweep,
+    reliability_curve,
+    reliability_from_confidence,
+    top_label,
+)
+from frontier.metrics.report import CalibrationReport, calibration_report, to_quality
+from frontier.metrics.scoring import BrierDecomposition, brier_decomposition, brier_score, nll
+
+__all__ = [
+    "DEFAULT_BINS",
+    "DEFAULT_RESAMPLES",
+    "DEFAULT_SWEEP",
+    "BinScheme",
+    "BrierDecomposition",
+    "CalibrationReport",
+    "ConfidenceInterval",
+    "ReliabilityCurve",
+    "Weighting",
+    "accuracy_ci",
+    "brier_decomposition",
+    "brier_score",
+    "calibration_report",
+    "check_confidence",
+    "check_predictions",
+    "ece",
+    "ece_ci",
+    "ece_equal_mass",
+    "ece_equal_width",
+    "ece_from_confidence",
+    "ece_sweep",
+    "nll",
+    "paired_delta_accuracy_ci",
+    "paired_delta_ece_ci",
+    "reliability_curve",
+    "reliability_from_confidence",
+    "to_quality",
+    "top_label",
+]
