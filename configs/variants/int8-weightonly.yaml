@@ -1,0 +1,14 @@
+name: int8-weightonly
+family: ptq
+track: A
+backend:
+  inference_backend: hf      # bitsandbytes LLM.int8 (weight-only: memory, not speed)
+  weight_dtype: int8
+  kv_cache_dtype: fp16
+  gpu_offload_layers: -1
+quant:
+  method: bnb-int8
+  bit_width: 8
+  group_size: -1
+# Weight-only int8. Kept distinct from int8-w8a8 on purpose; folding them into one
+# "INT8" point erases the most interesting latency and calibration difference.

@@ -1,0 +1,17 @@
+name: qat-3bit-lora
+family: qat
+track: A
+backend:
+  inference_backend: torchao
+  weight_dtype: int3
+  kv_cache_dtype: fp16
+  gpu_offload_layers: -1
+quant:
+  method: torchao-qat-lora   # QATConfig(base=IntxWeightOnlyConfig(...), prepare/convert) + LoRA
+  bit_width: 3
+  group_size: 32
+eval:
+  seeds: [0, 1, 2]           # training randomness enters here, so >=3 seeds
+# The one QAT variant. Teacher (3B) cannot take full-parameter QAT in 16GB, so this
+# is QAT+LoRA (frozen base, fake-quant forward, train adapters). int4 via Unsloth is
+# the pre-decided fallback if the 3-bit torchao path proves numerically flaky.

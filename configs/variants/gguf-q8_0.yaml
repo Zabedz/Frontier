@@ -1,0 +1,14 @@
+name: gguf-q8_0
+family: ptq
+track: B
+backend:
+  inference_backend: llama_cpp
+  weight_dtype: q8_0
+  kv_cache_dtype: fp16
+  gpu_offload_layers: 99
+quant:
+  method: gguf
+  bit_width: 8
+  group_size: -1
+# Low priority, likely cut: Q8_0 is ~FP16 and uninteresting on a compression
+# frontier. Kept as a config so the cut is a scheduling choice, not a code change.

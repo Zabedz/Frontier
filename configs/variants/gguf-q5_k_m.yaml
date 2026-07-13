@@ -1,0 +1,12 @@
+name: gguf-q5_k_m
+family: ptq
+track: B
+backend:
+  inference_backend: llama_cpp
+  weight_dtype: q5_k_m
+  kv_cache_dtype: fp16
+  gpu_offload_layers: 99
+quant:
+  method: gguf
+  bit_width: 5
+  group_size: -1

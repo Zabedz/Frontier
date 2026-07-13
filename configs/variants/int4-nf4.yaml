@@ -1,0 +1,13 @@
+name: int4-nf4
+family: ptq
+track: A
+backend:
+  inference_backend: hf      # bitsandbytes NF4 (the QLoRA base). GPU-only: no CPU smoke.
+  weight_dtype: nf4
+  kv_cache_dtype: fp16
+  gpu_offload_layers: -1
+quant:
+  method: bnb-nf4
+  bit_width: 4
+  group_size: 64             # nf4 blocksize
+# NF4 is data-free (no calibration corpus), so it sits outside the calibration axis.

@@ -1,0 +1,15 @@
+name: ptq-3bit-torchao
+family: ptq
+track: A
+backend:
+  inference_backend: torchao
+  weight_dtype: int3
+  kv_cache_dtype: fp16
+  gpu_offload_layers: -1
+quant:
+  method: torchao-intx       # IntxWeightOnlyConfig, group-wise
+  bit_width: 3
+  group_size: 32
+# The matched control for the QAT arm: identical quant config to qat-3bit-lora, so
+# the only difference is whether weights were adapted. Run this first (free, no
+# training) to confirm 3-bit PTQ visibly fails before spending GPU time on QAT.

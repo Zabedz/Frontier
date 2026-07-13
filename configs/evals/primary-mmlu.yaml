@@ -1,0 +1,13 @@
+# Primary calibration profile. The default; identical to base.yaml's eval block,
+# named here so a run is explicitly (variant x eval-profile). Cheap MCQ, CPU-smoke
+# friendly, this is the calibration backbone every variant is scored on.
+eval:
+  task_name: mmlu
+  split: test
+  subset_size: 2000          # full 14k reserved for the headline rows (fp16, int4-gptq, qat, soft-label)
+  prompt_style: zeroshot
+  scoring: letter_softmax
+  permutation_scheme: cyclic  # 4 cyclic orders for A-D; controls letter selection bias
+  labels: redux
+  cot: false
+  seeds: [0]

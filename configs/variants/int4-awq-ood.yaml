@@ -1,0 +1,14 @@
+name: int4-awq-ood
+family: ptq
+track: B
+backend:
+  inference_backend: vllm
+  weight_dtype: int4
+  kv_cache_dtype: fp16
+  gpu_offload_layers: -1
+quant:
+  method: llmcompressor-awq
+  bit_width: 4
+  group_size: 128
+  calibration_corpus: ood
+  calibration_samples: 512

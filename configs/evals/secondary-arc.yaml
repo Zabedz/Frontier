@@ -1,0 +1,14 @@
+# Secondary generalisation profile. ARC-Challenge (1,172 items, independent data,
+# four options, cheap). Checks whether the primary's calibration finding holds on
+# fresh data at the same difficulty. Same code path as the primary; only the
+# dataset changes. CC-BY-SA-4.0.
+eval:
+  task_name: arc_challenge
+  split: test
+  subset_size: null          # full set (1,172); usable with 10 equal-mass bins + CIs
+  prompt_style: zeroshot
+  scoring: letter_softmax
+  permutation_scheme: cyclic
+  labels: raw                # ARC has no Redux equivalent
+  cot: false
+  seeds: [0]

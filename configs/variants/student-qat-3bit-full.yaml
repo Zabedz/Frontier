@@ -1,0 +1,18 @@
+name: student-qat-3bit-full
+family: qat
+track: A
+model:
+  model_id: Qwen/Qwen2.5-0.5B-Instruct   # the student is the subject here, not the teacher
+backend:
+  inference_backend: torchao
+  weight_dtype: int3
+  kv_cache_dtype: fp16
+  gpu_offload_layers: -1
+quant:
+  method: torchao-qat-full   # full-parameter QAT (fits 16GB only at 0.5B)
+  bit_width: 3
+  group_size: 32
+eval:
+  seeds: [0, 1, 2]           # training randomness enters here, so >=3 seeds
+# The sharpest single calibration data point: genuine full-parameter QAT (not a
+# LoRA approximation), which fits in 16GB only at this size (~4-8GB at 0.5B).

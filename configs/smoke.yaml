@@ -1,0 +1,17 @@
+# Smoke overlay, applied last when --mode smoke. Tiny model, tiny eval, CPU. Proves
+# a code path end to end on a laptop with no GPU. GPU-only kernels (marlin INT4
+# decode, Unsloth, vLLM) are skipped; the quantise/eval/metric code path still runs.
+
+model:
+  model_id: HuggingFaceTB/SmolLM2-135M-Instruct
+  student_id: HuggingFaceTB/SmolLM2-135M-Instruct
+
+eval:
+  subset_size: 50
+  seeds: [0]
+
+latency:
+  batch_sizes: [1]
+  context_lengths: [128]
+  n_trials: 3
+  warmup: 1

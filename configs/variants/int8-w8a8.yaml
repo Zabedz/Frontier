@@ -1,0 +1,15 @@
+name: int8-w8a8
+family: ptq
+track: B
+backend:
+  inference_backend: vllm    # real int8 compute (weight + activation)
+  weight_dtype: int8
+  kv_cache_dtype: fp16
+  gpu_offload_layers: -1
+quant:
+  method: llmcompressor-w8a8  # SmoothQuant
+  bit_width: 8
+  group_size: -1
+  calibration_corpus: in_domain
+  calibration_samples: 512
+# Calibration set must be disjoint from the ECE eval set to avoid leakage.

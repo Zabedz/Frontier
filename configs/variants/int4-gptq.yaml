@@ -1,0 +1,15 @@
+name: int4-gptq
+family: ptq
+track: B
+backend:
+  inference_backend: vllm    # compressed-tensors W4A16 on gptq_marlin
+  weight_dtype: int4
+  kv_cache_dtype: fp16
+  gpu_offload_layers: -1
+quant:
+  method: llmcompressor-gptq  # GPTQModifier(scheme=W4A16, group_size=128, actorder=weight)
+  bit_width: 4
+  group_size: 128
+  calibration_corpus: in_domain
+  calibration_samples: 512
+# Half of the in-domain vs OOD calibration axis; pair with int4-gptq-ood.

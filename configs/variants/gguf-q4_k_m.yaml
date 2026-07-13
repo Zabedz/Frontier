@@ -1,0 +1,14 @@
+name: gguf-q4_k_m
+family: ptq
+track: B
+backend:
+  inference_backend: llama_cpp
+  weight_dtype: q4_k_m
+  kv_cache_dtype: fp16
+  gpu_offload_layers: 99     # full CUDA offload; runner asserts zero CPU spill before timing
+quant:
+  method: gguf
+  bit_width: 4
+  group_size: -1
+# Separate latency track. Never share a column with a vLLM or HF tokens/sec number.
+# CPU smoke runs the same GGUF file on the CPU build (slower, same code path).

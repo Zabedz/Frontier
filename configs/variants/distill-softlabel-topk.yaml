@@ -1,0 +1,20 @@
+name: distill-softlabel-topk
+family: distill
+track: A
+backend:
+  inference_backend: hf
+  weight_dtype: fp16
+  kv_cache_dtype: fp16
+  gpu_offload_layers: -1
+distill:
+  mode: soft_label_topk      # offline top-k KL against cached teacher logits
+  top_k: 64                  # + a kept "rest" bucket so truncation does not bias ECE
+  train_tokens: 30000000     # capped for the slow 16GB card; see the budget decision
+  epochs: 1
+  kd_temperature: 1.0        # single training temperature; the T axis is recovered
+                             # post-hoc via temperature scaling (see decision log)
+eval:
+  seeds: [0, 1, 2]           # training randomness enters here, so >=3 seeds
+# The contribution vehicle: soft labels carry the teacher's uncertainty, so this is
+# where distillation should beat PTQ on ECE. Teacher top-k logits are cached once,
+# offline, so every student experiment runs teacher-free.

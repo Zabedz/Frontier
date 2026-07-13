@@ -1,0 +1,31 @@
+# Shared defaults. Every variant file overlays this; an eval profile from
+# configs/evals/ overlays the `eval` block when selected with --eval; smoke.yaml
+# overlays last when --mode smoke. Settled values; see docs/decisions.md.
+
+model:
+  # Qwen2.5-3B teacher, 0.5B student (same family, one 151,936 tokenizer).
+  model_id: Qwen/Qwen2.5-3B-Instruct
+  model_revision: main
+  student_id: Qwen/Qwen2.5-0.5B-Instruct
+  student_revision: main
+
+eval:
+  # Default = the primary calibration profile (configs/evals/primary-mmlu.yaml).
+  task_name: mmlu
+  split: test
+  subset_size: 2000          # stratified subset for the compression sweep; full 14k for headline rows
+  prompt_style: zeroshot
+  scoring: letter_softmax     # softmax over answer-letter logprobs, not acc_norm
+  permutation_scheme: cyclic  # PriDe-style, to control compression-sensitive letter bias
+  labels: redux               # MMLU-Redux for de-noised final ECE
+  cot: false
+  # 1 seed by default: a PTQ eval on a fixed checkpoint is deterministic, and
+  # eval-set sampling noise is quantified by the bootstrap CIs, not by re-seeding.
+  # Training arms (QAT, distillation) override this to [0, 1, 2].
+  seeds: [0]
+
+latency:
+  batch_sizes: [1, 4, 16]     # 32 dropped: OOM-prone and uninformative for a 16GB FP16 3B
+  context_lengths: [512, 2048]
+  n_trials: 20
+  warmup: 5

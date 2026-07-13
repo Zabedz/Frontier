@@ -1,0 +1,16 @@
+name: int4-awq
+family: ptq
+track: B
+backend:
+  inference_backend: vllm    # compressed-tensors W4A16 on awq_marlin
+  weight_dtype: int4
+  kv_cache_dtype: fp16
+  gpu_offload_layers: -1
+quant:
+  method: llmcompressor-awq   # AWQModifier + QuantizationModifier(W4A16_ASYM)
+  bit_width: 4
+  group_size: 128
+  calibration_corpus: in_domain
+  calibration_samples: 512
+# AWQ scales come from calibration activations, so the OOD pair should move ECE
+# more than GPTQ's. That is the pre-registered hypothesis for the calibration axis.

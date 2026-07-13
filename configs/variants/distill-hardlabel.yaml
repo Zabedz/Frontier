@@ -1,0 +1,16 @@
+name: distill-hardlabel
+family: distill
+track: A
+backend:
+  inference_backend: hf
+  weight_dtype: fp16
+  kv_cache_dtype: fp16
+  gpu_offload_layers: -1
+distill:
+  mode: hard_label           # sequence-KD: SFT the student on teacher generations
+  train_tokens: 30000000     # capped for the slow 16GB card; see the budget decision
+  epochs: 1
+eval:
+  seeds: [0, 1, 2]           # training randomness enters here, so >=3 seeds
+# The "no soft targets" calibration reference. Student is full fine-tuned (not
+# LoRA), so its training regime matches the soft-label run.
