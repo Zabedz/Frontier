@@ -122,10 +122,12 @@ files = ["src", "tests"]
 
 [[tool.mypy.overrides]]
 # Heavy third-party stacks treated as untyped boundaries: lazily imported model,
-# quantiser, and serving libraries plus the columnar store. `follow_imports = skip`
-# keeps the result identical whether or not the stack is installed (transformers 5.x
-# ships partial py.typed hints, so without skip the strict check would pass on a base
-# checkout but fail once the `hf` group is present). Our own code stays strict.
+# quantiser, and serving libraries, the columnar store, and the plotting surface.
+# `follow_imports = skip` keeps the result identical whether or not the stack is
+# installed (transformers 5.x ships partial py.typed hints, so without skip the strict
+# check would pass on a base checkout but fail once the `hf` group is present).
+# matplotlib ships partial hints whose gaps trip strict mode on Axes/Figure keyword
+# arguments; the analysis code stays strict and only the matplotlib calls are skipped.
 module = [
     "netcal.*",
     "vllm.*",
@@ -140,6 +142,7 @@ module = [
     "peft.*",
     "trl.*",
     "pyarrow.*",
+    "matplotlib.*",
 ]
 follow_imports = "skip"
 ignore_missing_imports = true

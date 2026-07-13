@@ -15,6 +15,7 @@ import numpy.typing as npt
 
 from frontier.eval.provider import LogitProvider
 from frontier.eval.records import LETTERS, EvalRecord
+from frontier.io.predictions import predictions_key, predictions_path, read_predictions
 from frontier.io.store import ResultStore, read_rows
 from frontier.latency.rig import LatencyMemory
 from frontier.pipeline.config import ResolvedConfig
@@ -25,6 +26,7 @@ CONFIG_ROOT = Path(__file__).resolve().parents[2] / "configs"
 FP16 = CONFIG_ROOT / "variants" / "fp16.yaml"
 GOLD_MARK = "<<GOLD>>"
 CANNED_SM_MHZ = 1500
+N_ITEMS = 16
 FloatArray = npt.NDArray[np.float64]
 IntArray = npt.NDArray[np.intp]
 _LETTER_INDEX = {letter: i for i, letter in enumerate(LETTERS)}
@@ -156,6 +158,16 @@ def test_synthetic_runner_emits_one_valid_row(tmp_path: Path) -> None:
     assert math.isnan(stored[0].quality.perplexity)
     assert stored[0].latency[0].machine_state.gpu_clock_sm_mhz == CANNED_SM_MHZ
 
+    key = predictions_key(row.provenance.config_hash, row.provenance.seed, row.task.task_name)
+    sidecar = predictions_path(tmp_path, key)
+    assert sidecar.exists()
+    preds = read_predictions(tmp_path, key)
+    assert preds.confidence.shape[0] == N_ITEMS
+    assert bool(((preds.confidence >= 0.0) & (preds.confidence <= 1.0)).all())
+    # ``correct`` is exactly ``exact_match(predicted, gold)``, so it reconstructs off
+    # the self-describing sidecar columns.
+    assert np.array_equal(preds.correct, preds.predicted == preds.gold)
+
 
 def test_synthetic_runner_skips_latency_when_disabled(tmp_path: Path) -> None:
     def factory(variant: VariantConfig, device: str) -> _SyntheticProvider:  # noqa: ARG001
@@ -181,3 +193,26 @@ def test_synthetic_runner_skips_latency_when_disabled(tmp_path: Path) -> None:
     assert row.latency == []
     assert row.memory == []
     assert math.isnan(row.tok_s_per_gb)
+
+
+def test_synthetic_runner_skips_predictions_when_disabled(tmp_path: Path) -> None:
+    def factory(variant: VariantConfig, device: str) -> _SyntheticProvider:  # noqa: ARG001
+        return _SyntheticProvider()
+
+    def loader(spec: EvalSpec, *, seed: int) -> list[EvalRecord]:  # noqa: ARG001
+        return _records(N_ITEMS)
+
+    run(
+        FP16,
+        mode="smoke",
+        config_root=CONFIG_ROOT,
+        results_root=tmp_path,
+        provider_factory=factory,
+        slice_loader=loader,
+        timestamp="2026-07-13T00:00:00+00:00",
+        git_sha="deadbeef",
+        latency_probe=_canned_latency,
+        write_predictions=False,
+    )
+
+    assert not (tmp_path / "predictions").exists()

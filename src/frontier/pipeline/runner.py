@@ -24,6 +24,7 @@ from frontier.eval.extract import exact_match, score_items, to_robustness, to_ta
 from frontier.eval.loaders import load_arc_challenge, load_mmlu, load_mmlu_redux
 from frontier.eval.provider import LogitProvider
 from frontier.eval.records import EvalRecord
+from frontier.io.predictions import PredictionRows, predictions_key, write_predictions_rows
 from frontier.io.provenance import hardware_info, now_utc_iso, read_git_sha, stamp_provenance
 from frontier.io.store import ResultStore, append_row
 from frontier.latency.rig import LatencyMemory, default_latency
@@ -88,6 +89,7 @@ def run(
     git_sha: str | None = None,
     latency_probe: LatencyProbe | None = None,
     measure_latency: bool = True,
+    write_predictions: bool = True,
 ) -> list[ResultRow]:
     """Resolve config, score, compute metrics, assemble one row per seed, append.
 
@@ -97,6 +99,9 @@ def run(
     seed, so they are measured once (before the seed loop) and shared across the rows;
     ``measure_latency=False`` (CLI ``--skip-latency``) leaves those fields empty for a
     secondary profile that will be joined to the primary run's latency in analysis.
+    ``write_predictions=True`` (CLI default; ``--skip-predictions`` disables it) writes
+    each seed's per-item ``(confidence, correct, gold, predicted)`` sidecar next to the
+    appended row, the raw calibration signal the reliability figures read back.
     Returns the appended rows in seed order.
     """
     resolved = resolve_config(
@@ -160,6 +165,17 @@ def run(
             robustness=to_robustness(out.robustness),
         )
         append_row(row, store)
+        if write_predictions:
+            write_predictions_rows(
+                PredictionRows(
+                    confidence=out.confidence,
+                    correct=correct,
+                    gold=out.gold,
+                    predicted=out.predicted,
+                ),
+                root=results_root,
+                key=predictions_key(resolved.config_hash, seed, resolved.eval_spec.task_name),
+            )
         rows.append(row)
     return rows
 

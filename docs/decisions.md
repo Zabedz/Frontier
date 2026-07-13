@@ -4,6 +4,17 @@ Newest first. Each entry: the decision, the reasoning, and whether it is settled
 or provisional. Kept current as the project evolves; this is the memory of why
 things are the way they are.
 
+### 2026-07-13 Result store and figures are regenerated, not committed (SETTLED)
+`results/` (the parquet + jsonl store, including the per-item predictions sidecars)
+and `plots/` are git-ignored. They are throwaway output: the smoke store churns on
+every local run, and a committed binary parquet is noise in the history. Reproducibility
+is by deterministic re-run, not by checking the output in: each row carries the git SHA,
+the resolved config hash, the model revision, and the seed, so a run reconstructs from
+the config plus that provenance. This reverses the earlier "result rows are committed"
+note in the `.gitignore` and README. The exception is deliberate: when the real pod runs
+finish, the final headline figures and the exact result set behind the report are
+committed under `reports/` as the citable record.
+
 ### 2026-07-13 Target the true 16GB A4000/L4, and cut the matrix to protect ~20h (SETTLED)
 Chosen over a 4090-capped-at-16GB: the honest card is faithful to the stated
 ceiling and cheaper per hour, at ~2-3x slower throughput. The full matrix would be

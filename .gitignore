@@ -27,8 +27,9 @@ venv/
 # Local machine change log for remote pods (kept local, never shared)
 SSH_CHANGELOG.md
 
-# Large / generated experiment artifacts
-# Result rows are committed (they are the record). Heavy binaries are not.
+# Large regenerable experiment artifacts
+# The pipeline and `frontier plot` rebuild the result store and the figures on each
+# run, so they are not committed. Heavy binaries are not either.
 models/
 checkpoints/
 *.gguf
@@ -36,8 +37,11 @@ checkpoints/
 *.bin
 teacher_cache/            # cached teacher top-k logits for offline distillation
 runs/                     # raw per-run scratch (logs, temp checkpoints)
-results/**/*.parquet.tmp
-plots/*.png.tmp
+results/*.jsonl
+results/*.parquet
+results/*.parquet.tmp
+results/predictions/
+plots/
 
 # OS
 .DS_Store

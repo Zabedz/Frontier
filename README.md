@@ -26,10 +26,22 @@ configs/        one YAML per variant; adding a variant is adding a file
   schema/       JSON Schema the configs are validated against
   variants/     the variant matrix, as data
 docs/           methodology rules and the results-row schema
-src/frontier/   the pipeline (metrics, eval, quantize, distill, latency, io)
+src/frontier/   the pipeline (metrics, eval, quantize, distill, latency, io, analysis)
 tests/          unit tests; the calibration maths carry the heaviest coverage
-results/        append-only parquet/jsonl result rows (the record)
+results/        the result store (parquet + jsonl); regenerated, git-ignored
+plots/          figures written by `frontier plot`; regenerated, git-ignored
+reports/        the technical writeup, with the headline figures committed alongside it
 ```
+
+## Reproducibility
+
+`results/` and `plots/` are regenerated artifacts, not committed: the store is
+rebuilt by re-running the pipeline, and `frontier plot` redraws the figures from it,
+so both are git-ignored. Reproducibility comes from the pipeline being deterministic
+rather than from checking in its output: every row carries the git SHA, the resolved
+config hash, the model revision, and the seed, so a run reconstructs from the config
+and that provenance. The final headline figures and the result set behind the report
+are committed deliberately under `reports/` when the real pod runs finish.
 
 ## Two ways to run
 
