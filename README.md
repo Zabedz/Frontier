@@ -61,10 +61,9 @@ installed on the pod by hand. The versions and install order are in
 ## Running
 
 A run is one variant crossed with one eval profile, and it appends one result
-row. Adding a variant or a task means adding a YAML file under `configs/`, never
-editing code. Mode is a config field resolved by the runner: `smoke` pins a tiny
-model and a 50-item slice on CPU, `full` uses the real models and eval sets on
-the pod.
+row. Adding a variant or a task means adding a YAML file under `configs/`. Mode
+is a config field resolved by the runner: `smoke` pins a tiny model and a 50-item
+slice on CPU, `full` uses the real models and eval sets on the pod.
 
 ```bash
 # CPU smoke: proves the end-to-end path on a laptop (downloads SmolLM2-135M)
