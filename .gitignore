@@ -35,14 +35,17 @@ checkpoints/
 *.gguf
 *.safetensors
 *.bin
-teacher_cache/            # cached teacher top-k logits for offline distillation
-runs/                     # raw per-run scratch (logs, temp checkpoints)
+# cached teacher top-k logits for offline distillation
+teacher_cache/
+# raw per-run scratch (logs, temp checkpoints)
+runs/
 results/*.jsonl
 results/*.parquet
 results/*.parquet.tmp
 results/predictions/
 plots/
-logs/                     # mirrored pod job logs + the watcher heartbeat log
+# mirrored pod job logs + the watcher heartbeat log
+logs/
 
 # Pod harness: the connection details are ephemeral (per pod), kept local
 scripts/pod/env.sh
