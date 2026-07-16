@@ -104,7 +104,7 @@ reports/        the technical writeup, with the headline figures committed along
 `results/` and `plots/` are rebuilt from the pipeline, so they are not committed.
 Every result row carries the git SHA, the resolved config hash, the model
 revision, and the seed, so a run reconstructs from its config and that
-provenance rather than from a checked-in artifact.
+provenance alone.
 
 ## Documentation
 
