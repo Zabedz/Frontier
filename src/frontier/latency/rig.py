@@ -118,7 +118,7 @@ def measure_latency_memory(
         peak_by_key[(batch_size, context)] = entry.peak_vram_mb
 
     reference = reference_batch if reference_batch is not None else max(spec.batch_sizes)
-    tok_s_per_gb = _cost_proxy(
+    tok_s_per_gb = cost_proxy(
         stats_by_batch[reference].throughput_tok_s, peak_by_key[(reference, context_len)]
     )
     return LatencyMemory(latency=latency, memory=memory, tok_s_per_gb=tok_s_per_gb)
@@ -169,7 +169,13 @@ def default_latency(
     )
 
 
-def _cost_proxy(throughput_tok_s: float, peak_vram_mb: float) -> float:
+def cost_proxy(throughput_tok_s: float, peak_vram_mb: float) -> float:
+    """The headline ``tok_s_per_gb``: decode throughput over peak VRAM in GB.
+
+    ``NaN`` when the peak is ``<= 0`` (an unmeasured or degenerate probe) rather than a
+    divide-by-zero. Shared with the Track-B native probes, which compute the same proxy
+    from their own throughput and nvidia-smi peak reading.
+    """
     if peak_vram_mb <= 0.0:
         return math.nan
     return throughput_tok_s / (peak_vram_mb / _MB_PER_GB)

@@ -26,6 +26,7 @@ dependencies = [
 
 [project.scripts]
 frontier = "frontier.pipeline.cli:app"
+frontier-quantize = "frontier.quantize.cli:app"
 
 [dependency-groups]
 # Calibration-metric oracles. torch-dependent and heavy (netcal pulls pyro +
@@ -46,11 +47,16 @@ hf = [
     "torch>=2.5",
     "transformers>=5.0",
     "accelerate>=0.34",
+    "bitsandbytes>=0.43 ; sys_platform == 'linux'",  # NF4 / LLM.int8 (Track A); linux-only wheel
 ]
 
-# The GPU-only stack is intentionally not here. Its versions are pinned against the
-# real CUDA driver on the pod, not resolved on a laptop, so it is documented in
-# docs/pod-setup.md and added to this file at pod-provision time (WP4).
+# The Track-B serving/quantise stack (vllm, llmcompressor, compressed-tensors,
+# gptqmodel, torchao, llama-cpp-python) is intentionally NOT a locked group: it pins
+# against the real CUDA build and its transformers (< 5, capped by llmcompressor)
+# conflicts with the hf group's 5.x, so it is installed separately on the pod. The
+# backends and producers import it lazily behind Any-typed seams, so the CPU checks
+# pass without it. See docs/pod-setup.md for the versions and install order.
+
 dev = [
     "ruff>=0.6",
     "mypy>=1.11",

@@ -24,6 +24,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from frontier.backends.bnb import bnb_config_kwargs, is_bnb_dtype, resolve_bnb_compute_dtype
 from frontier.eval.prompts import ANSWER_TRIGGER
 from frontier.eval.provider import Tokenizer, resolve_candidate_ids
 from frontier.eval.records import FloatArray, IntArray
@@ -165,15 +166,42 @@ class HFLogitProvider:
             self.model_id, revision=self.revision
         )
         tokenizer.padding_side = "left"
-        torch_dtype = getattr(torch, resolve_dtype(self.device, self.weight_dtype))
-        model = transformers.AutoModelForCausalLM.from_pretrained(
-            self.model_id, revision=self.revision, dtype=torch_dtype
-        )
-        model.to(self.device)
+        if self.device != "cpu" and is_bnb_dtype(self.weight_dtype):
+            model = self._load_bnb(transformers, torch)  # pragma: no cover
+        else:
+            torch_dtype = getattr(torch, resolve_dtype(self.device, self.weight_dtype))
+            model = transformers.AutoModelForCausalLM.from_pretrained(
+                self.model_id, revision=self.revision, dtype=torch_dtype
+            )
+            model.to(self.device)
         model.eval()
         self._tokenizer = tokenizer
         self._model = model
         self._backend_version = transformers.__version__
+
+    def _load_bnb(self, transformers: Any, torch: Any) -> Any:  # pragma: no cover
+        """Load the model quantised through bitsandbytes on the CUDA path.
+
+        A bnb-quantised model must be placed with ``device_map={"": 0}`` at load time;
+        it cannot be moved with ``.to(device)`` afterwards, which is why the caller skips
+        the ``.to`` for this branch. The compute dtype comes from
+        ``resolve_bnb_compute_dtype`` (bf16 for the Qwen family), used both as the
+        activation dtype and as ``bnb_4bit_compute_dtype`` on the config.
+        """
+        compute_name = resolve_bnb_compute_dtype(self.weight_dtype)
+        kwargs = bnb_config_kwargs(self.weight_dtype, compute_dtype=compute_name)
+        if "bnb_4bit_compute_dtype" in kwargs:
+            # Resolve the string dtype name to the real torch dtype only for the 4-bit
+            # (NF4) path; the int8 kwargs carry no compute dtype, so nothing is added there.
+            kwargs["bnb_4bit_compute_dtype"] = getattr(torch, compute_name)
+        quant_config = transformers.BitsAndBytesConfig(**kwargs)
+        return transformers.AutoModelForCausalLM.from_pretrained(
+            self.model_id,
+            revision=self.revision,
+            quantization_config=quant_config,
+            dtype=getattr(torch, compute_name),
+            device_map={"": 0},
+        )
 
     @property
     def backend_version(self) -> str:

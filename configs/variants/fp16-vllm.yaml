@@ -1,0 +1,12 @@
+name: fp16-vllm
+family: baseline
+track: B
+backend:
+  inference_backend: vllm    # serves the base HF model directly; no quant, no checkpoint
+  weight_dtype: fp16
+  kv_cache_dtype: fp16
+  gpu_offload_layers: -1
+# The Track-B calibration gate, not a frontier point. Its candidate softmax and ECE must
+# reproduce the fp16 HF baseline before any vLLM INT4 ECE is admitted next to an HF ECE
+# (docs/architecture.md, tests/backends/test_vllm_fidelity.py). Because it has no quant,
+# build_provider serves Qwen2.5-3B directly, so the gate needs no produced checkpoint.

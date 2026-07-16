@@ -7,9 +7,14 @@ slice loader are injectable, so a CPU test drives the whole chain with a synthet
 provider and in-memory records: no model, no network.
 
 ``perplexity`` stays ``NaN`` (no held-out corpus yet). ``latency``, ``memory``, and
-``tok_s_per_gb`` are filled once per run by the injectable ``latency_probe`` (the real
-``default_latency`` rig by default); ``measure_latency=False`` restores the empty /
+``tok_s_per_gb`` are filled once per run by the injectable ``latency_probe`` (the
+backend's probe from ``build_latency_probe`` by default: the WP4 rig for HF, the native
+benchmarker for a Track-B backend); ``measure_latency=False`` restores the empty /
 ``NaN`` fields for a secondary profile joined to the primary run in analysis.
+
+The provider and the latency probe are chosen from ``backend.inference_backend`` by
+``frontier.backends.registry``, so the runner stays backend-agnostic; the injectable
+``provider_factory`` / ``latency_probe`` seams still let a test drive the chain directly.
 """
 
 from __future__ import annotations
@@ -19,7 +24,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
-from frontier.backends.hf import HFLogitProvider, resolve_device
+from frontier.backends.hf import resolve_device
+from frontier.backends.registry import build_latency_probe, build_provider
 from frontier.eval.extract import exact_match, score_items, to_robustness, to_task_spec
 from frontier.eval.loaders import load_arc_challenge, load_mmlu, load_mmlu_redux
 from frontier.eval.provider import LogitProvider
@@ -27,7 +33,7 @@ from frontier.eval.records import EvalRecord
 from frontier.io.predictions import PredictionRows, predictions_key, write_predictions_rows
 from frontier.io.provenance import hardware_info, now_utc_iso, read_git_sha, stamp_provenance
 from frontier.io.store import ResultStore, append_row, read_jsonl_rows
-from frontier.latency.rig import LatencyMemory, default_latency
+from frontier.latency.rig import LatencyMemory
 from frontier.metrics.bootstrap import accuracy_ci, ece_ci
 from frontier.metrics.report import calibration_report, to_quality
 from frontier.pipeline.config import DEFAULT_CONFIG_ROOT, ResolvedConfig, resolve_config
@@ -83,6 +89,7 @@ def run(
     mode: RunMode = "full",
     config_root: Path = DEFAULT_CONFIG_ROOT,
     results_root: Path = Path("results"),
+    checkpoints_root: Path = Path("checkpoints"),
     timestamp: str | None = None,
     provider_factory: ProviderFactory | None = None,
     slice_loader: SliceLoader | None = None,
@@ -124,14 +131,21 @@ def run(
     provider = (
         provider_factory(resolved.variant, device)
         if provider_factory is not None
-        else _default_provider(resolved, device)
+        else build_provider(
+            resolved.variant,
+            resolved.backend,
+            device=device,
+            mode=mode,
+            checkpoints_root=checkpoints_root,
+            seed=resolved.eval_spec.seeds[0],
+        )
     )
     load: Callable[..., list[EvalRecord]] = slice_loader or load_slice
     hardware = hardware_info(device=device)
     sha = git_sha if git_sha is not None else read_git_sha()
 
     if measure_latency:
-        probe = latency_probe or default_latency
+        probe = latency_probe or build_latency_probe(resolved.backend, mode=mode)
         lat_mem = probe(provider, resolved, device=device, mode=mode)
     else:
         lat_mem = LatencyMemory(latency=[], memory=[], tok_s_per_gb=math.nan)
@@ -201,15 +215,6 @@ def _done_seeds(store: ResultStore, config_hash: str, task_name: str) -> set[int
         for row in read_jsonl_rows(store)
         if row.provenance.config_hash == config_hash and row.task.task_name == task_name
     }
-
-
-def _default_provider(resolved: ResolvedConfig, device: str) -> LogitProvider:
-    return HFLogitProvider(
-        model_id=resolved.variant.model.model_id,
-        device=device,
-        weight_dtype=str(resolved.backend["weight_dtype"]),
-        revision=resolved.variant.model.model_revision,
-    )
 
 
 def _build_backend(resolved: ResolvedConfig, provider: LogitProvider) -> Backend:

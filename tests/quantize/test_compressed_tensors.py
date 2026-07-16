@@ -1,0 +1,52 @@
+"""The compressed-tensors producer's CPU-checkable parts: completion and idempotence.
+
+The GPU ``oneshot`` is not run here; these cover the early-return guard (a complete
+checkpoint is not re-quantised) and the no-quant rejection, so a re-run of the batch
+driver never wastes a calibration pass and a misrouted config fails loudly.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from frontier.pipeline.config import resolve_config
+from frontier.quantize.compressed_tensors import _is_complete, produce_compressed_tensors
+from frontier.quantize.paths import checkpoint_path
+
+CONFIG_ROOT = Path(__file__).resolve().parents[2] / "configs"
+
+
+def _complete_checkpoint(root: Path) -> Path:
+    root.mkdir(parents=True)
+    (root / "config.json").write_text("{}", encoding="utf-8")
+    (root / "recipe.yaml").write_text("recipe: {}", encoding="utf-8")
+    return root
+
+
+def test_is_complete_requires_config_and_recipe(tmp_path: Path) -> None:
+    assert _is_complete(_complete_checkpoint(tmp_path / "done"))
+    partial = tmp_path / "partial"
+    partial.mkdir()
+    (partial / "config.json").write_text("{}", encoding="utf-8")
+    assert not _is_complete(partial)
+    assert not _is_complete(tmp_path / "missing")
+
+
+def test_producer_returns_early_for_a_complete_checkpoint(tmp_path: Path) -> None:
+    resolved = resolve_config(CONFIG_ROOT / "variants" / "int4-gptq.yaml", config_root=CONFIG_ROOT)
+    out = checkpoint_path(resolved.variant, resolved.backend, root=tmp_path)
+    _complete_checkpoint(out)
+    # A re-run must not reach the GPU ``oneshot`` (which would import llmcompressor); it
+    # returns the existing path instead.
+    result = produce_compressed_tensors(
+        resolved.variant, resolved.backend, checkpoints_root=tmp_path
+    )
+    assert result == out
+
+
+def test_producer_rejects_a_variant_without_quant(tmp_path: Path) -> None:
+    resolved = resolve_config(CONFIG_ROOT / "variants" / "fp16-vllm.yaml", config_root=CONFIG_ROOT)
+    with pytest.raises(ValueError, match="no quant block"):
+        produce_compressed_tensors(resolved.variant, resolved.backend, checkpoints_root=tmp_path)

@@ -56,6 +56,10 @@ def run(
     config_root: Annotated[Path, typer.Option("--config-root", help="Config root.")] = Path(
         "configs"
     ),
+    checkpoints: Annotated[
+        Path,
+        typer.Option("--checkpoints", help="Root of produced Track-B checkpoints (pod volume)."),
+    ] = Path("checkpoints"),
     skip_latency: Annotated[
         bool,
         typer.Option(
@@ -76,6 +80,7 @@ def run(
         mode=_parse_mode(mode),
         config_root=config_root,
         results_root=results,
+        checkpoints_root=checkpoints,
         measure_latency=not skip_latency,
         write_predictions=not skip_predictions,
     )
