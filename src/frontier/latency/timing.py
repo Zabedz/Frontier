@@ -116,11 +116,16 @@ class HFGenerationDriver:
         cache = transformers.DynamicCache(config=model.config)
         with torch.inference_mode():
             clock.mark()
+            # logits_to_keep=1 keeps only the last position's logits. Without it the
+            # prefill materialises logits for every one of batch*context positions over
+            # the full vocab (~10GB at batch 16 / context 2048 / 152k vocab), which OOMs
+            # a 16GB card; only the last position drives the next token anyway.
             output = model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 past_key_values=cache,
                 use_cache=True,
+                logits_to_keep=1,
             )
             next_ids = output.logits[:, -1:, :].argmax(-1)
             clock.mark()
@@ -133,6 +138,7 @@ class HFGenerationDriver:
                     attention_mask=attention_mask,
                     past_key_values=cache,
                     use_cache=True,
+                    logits_to_keep=1,
                 )
                 next_ids = output.logits[:, -1:, :].argmax(-1)
                 clock.mark()

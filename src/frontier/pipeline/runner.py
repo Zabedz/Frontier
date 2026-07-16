@@ -26,7 +26,7 @@ from frontier.eval.provider import LogitProvider
 from frontier.eval.records import EvalRecord
 from frontier.io.predictions import PredictionRows, predictions_key, write_predictions_rows
 from frontier.io.provenance import hardware_info, now_utc_iso, read_git_sha, stamp_provenance
-from frontier.io.store import ResultStore, append_row
+from frontier.io.store import ResultStore, append_row, read_jsonl_rows
 from frontier.latency.rig import LatencyMemory, default_latency
 from frontier.metrics.bootstrap import accuracy_ci, ece_ci
 from frontier.metrics.report import calibration_report, to_quality
@@ -90,6 +90,7 @@ def run(
     latency_probe: LatencyProbe | None = None,
     measure_latency: bool = True,
     write_predictions: bool = True,
+    resume: bool = True,
 ) -> list[ResultRow]:
     """Resolve config, score, compute metrics, assemble one row per seed, append.
 
@@ -107,6 +108,18 @@ def run(
     resolved = resolve_config(
         config_path, eval_profile=eval_profile, mode=mode, config_root=config_root
     )
+    store = ResultStore(results_root)
+
+    # Resume: a row is keyed by (config_hash, seed, task), so a re-run after a pod wipe
+    # only does the seeds not already in the store, and skips the expensive model load
+    # entirely when a variant is already complete.
+    done = (
+        _done_seeds(store, resolved.config_hash, resolved.eval_spec.task_name) if resume else set()
+    )
+    pending = [seed for seed in resolved.eval_spec.seeds if seed not in done]
+    if not pending:
+        return []
+
     device = resolve_device(mode)
     provider = (
         provider_factory(resolved.variant, device)
@@ -114,7 +127,6 @@ def run(
         else _default_provider(resolved, device)
     )
     load: Callable[..., list[EvalRecord]] = slice_loader or load_slice
-    store = ResultStore(results_root)
     hardware = hardware_info(device=device)
     sha = git_sha if git_sha is not None else read_git_sha()
 
@@ -125,7 +137,7 @@ def run(
         lat_mem = LatencyMemory(latency=[], memory=[], tok_s_per_gb=math.nan)
 
     rows: list[ResultRow] = []
-    for seed in resolved.eval_spec.seeds:
+    for seed in pending:
         records = load(resolved.eval_spec, seed=seed)
         out = score_items(
             records,
@@ -178,6 +190,17 @@ def run(
             )
         rows.append(row)
     return rows
+
+
+def _done_seeds(store: ResultStore, config_hash: str, task_name: str) -> set[int]:
+    """Seeds already recorded for this (config, task), read from the durable jsonl log."""
+    if not store.jsonl_path.exists():
+        return set()
+    return {
+        row.provenance.seed
+        for row in read_jsonl_rows(store)
+        if row.provenance.config_hash == config_hash and row.task.task_name == task_name
+    }
 
 
 def _default_provider(resolved: ResolvedConfig, device: str) -> LogitProvider:

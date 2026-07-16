@@ -216,6 +216,8 @@ class HFLogitProvider:
             texts, return_tensors="pt", padding=True, add_special_tokens=False
         ).to(self.device)
         with torch.inference_mode():
-            output = self._model(**encoded)
+            # logits_to_keep=1: only the answer position is read, so materialising
+            # logits for every position would waste memory (vocab is ~152k here).
+            output = self._model(**encoded, logits_to_keep=1)
         final = output.logits[:, -1, :].to(torch.float32).cpu().numpy()
         return np.asarray(final, dtype=np.float64)

@@ -169,6 +169,44 @@ def test_synthetic_runner_emits_one_valid_row(tmp_path: Path) -> None:
     assert np.array_equal(preds.correct, preds.predicted == preds.gold)
 
 
+def test_synthetic_runner_resumes_skipping_done_seeds(tmp_path: Path) -> None:
+    def factory(variant: VariantConfig, device: str) -> _SyntheticProvider:  # noqa: ARG001
+        return _SyntheticProvider()
+
+    def loader(spec: EvalSpec, *, seed: int) -> list[EvalRecord]:  # noqa: ARG001
+        return _records(N_ITEMS)
+
+    first = run(
+        FP16,
+        mode="smoke",
+        config_root=CONFIG_ROOT,
+        results_root=tmp_path,
+        provider_factory=factory,
+        slice_loader=loader,
+        timestamp="2026-07-13T00:00:00+00:00",
+        git_sha="deadbeef",
+        latency_probe=_canned_latency,
+    )
+    assert len(first) == 1
+
+    def exploding_factory(variant: VariantConfig, device: str) -> _SyntheticProvider:  # noqa: ARG001
+        raise AssertionError("the provider must not be built when the run is already complete")
+
+    second = run(
+        FP16,
+        mode="smoke",
+        config_root=CONFIG_ROOT,
+        results_root=tmp_path,
+        provider_factory=exploding_factory,
+        slice_loader=loader,
+        timestamp="2026-07-13T00:00:00+00:00",
+        git_sha="deadbeef",
+        latency_probe=_canned_latency,
+    )
+    assert second == []
+    assert len(read_rows(ResultStore(tmp_path))) == 1
+
+
 def test_synthetic_runner_skips_latency_when_disabled(tmp_path: Path) -> None:
     def factory(variant: VariantConfig, device: str) -> _SyntheticProvider:  # noqa: ARG001
         return _SyntheticProvider()

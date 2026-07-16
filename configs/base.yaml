@@ -17,7 +17,9 @@ eval:
   prompt_style: zeroshot
   scoring: letter_softmax     # softmax over answer-letter logprobs, not acc_norm
   permutation_scheme: cyclic  # PriDe-style, to control compression-sensitive letter bias
-  labels: redux               # MMLU-Redux for de-noised final ECE
+  labels: raw                 # raw MMLU for the iteration campaign; redux (de-noised)
+                              # is for the final headline, pending its correct_answer
+                              # encoding check on the pod (see docs/decisions.md)
   cot: false
   # 1 seed by default: a PTQ eval on a fixed checkpoint is deterministic, and
   # eval-set sampling noise is quantified by the bootstrap CIs, not by re-seeding.
