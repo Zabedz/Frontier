@@ -5,19 +5,25 @@ or provisional. Kept current as the project evolves; this is the memory of why
 things are the way they are.
 
 ### 2026-07-16 Track B runs in a separate pod venv from Track A (SETTLED)
-The two tracks pin incompatible transformers and cannot share one environment. Track A's
-HF backend uses the transformers 5.x `dtype=` API; the Track-B serving/quantise stack caps
-transformers below 5 (llmcompressor's ceiling) and vLLM pulls that lower version. So the
-pod holds two venvs. venv-A is `uv sync --group hf` (transformers 5.x, torch, accelerate,
-and bitsandbytes behind a linux marker) and runs the fp16 and bnb `nf4`/`int8` variants
-through the HF backend. venv-B is a separate pod-only install (vllm, llmcompressor,
-compressed-tensors, llama-cpp-python built with CUDA, gptqmodel, torchao; no bitsandbytes,
-no transformers 5) and runs `frontier-quantize` and the `vllm`/`llama_cpp` `frontier run`.
-The batch driver selects the venv per variant by `backend.inference_backend`. The Track-B
-stack is deliberately not a locked dependency group, so a laptop `uv lock`/`uv sync` never
-tries to resolve vLLM and stays CPU-clean; venv-B's versions pin on the pod. This replaces
-the earlier single-`gpu`-group sketch in `docs/pod-setup.md`, which was self-contradictory
-(it listed transformers>=5.0 alongside llmcompressor, which cannot co-resolve).
+The two tracks pin different, non-overlapping transformers versions and cannot share one
+environment. Track A's HF backend tracks the latest transformers 5.x (the `dtype=` API);
+the Track-B serving/quantise stack caps transformers at `<=5.10.1` (llmcompressor's
+ceiling) and vLLM fixes its own torch build. So the pod holds two venvs. venv-A is
+`uv sync --group hf` (latest transformers 5.x, torch, accelerate, and bitsandbytes behind a
+linux marker) and runs the fp16 and bnb `nf4`/`int8` variants through the HF backend.
+venv-B is a separate pod-only install on the local disk (vllm, llmcompressor,
+compressed-tensors, llama-cpp-python built with CUDA, gptqmodel, torchao; no bitsandbytes),
+pinned as one uv resolution pass at transformers 5.10.1 with a compressed-tensors override,
+and runs `frontier-quantize` and the `vllm`/`llama_cpp` `frontier run`. The single-pass pin
+is load-bearing: a split install lets vLLM's unbounded `transformers>=5.5.3` pull a newer
+transformers, which drops llmcompressor to its transformers-4 line and fails with
+`Could not import module 'PreTrainedModel'` (the first pod hit exactly this). The batch
+driver selects the venv per variant by `backend.inference_backend`. The Track-B stack is
+deliberately not a locked dependency group, so a laptop `uv lock`/`uv sync` never tries to
+resolve vLLM and stays CPU-clean; venv-B's versions pin on the pod and in the pre-baked
+image (see `docker/`). This replaces the earlier single-`gpu`-group sketch, which was
+self-contradictory (it listed transformers>=5.0 alongside llmcompressor, which cannot
+co-resolve).
 
 ### 2026-07-16 GATE: the vLLM latency probe is unvalidated, fix it on the pod (OPEN)
 `frontier.latency.native.NativeVllmLatency` is not yet correct and must be fixed against

@@ -1,13 +1,13 @@
 # Pod setup
 
-The GPU stack is pod-only and splits into two separate venvs. The two tracks pin
-incompatible transformers and cannot co-resolve in one environment: Track A's HF backend
-uses the transformers 5.x `dtype=` API, while the Track-B serving/quantise stack caps
-transformers below 5 (llmcompressor) and vLLM pulls that lower version. So the pod holds
-two venvs, and the batch driver picks one per variant by `backend.inference_backend`.
-Nothing here is on the laptop: venv-A's heavy deps live in the `hf` group (linux-marked
-where CUDA-only), and venv-B is installed straight on the pod, not as a locked group, so
-`uv lock`/`uv sync` on a laptop stays CPU-clean.
+The GPU stack is pod-only and splits into two separate venvs. The two tracks pin different,
+non-overlapping transformers versions and cannot co-resolve in one environment: Track A's HF
+backend tracks the latest transformers 5.x (the `dtype=` API), while the Track-B
+serving/quantise stack caps transformers at `<=5.10.1` (llmcompressor) and vLLM fixes its own
+torch build. So the pod holds two venvs, and the batch driver picks one per variant by
+`backend.inference_backend`. Nothing here is on the laptop: venv-A's heavy deps live in the
+`hf` group (linux-marked where CUDA-only), and venv-B is installed straight on the pod, not
+as a locked group, so `uv lock`/`uv sync` on a laptop stays CPU-clean.
 
 ## venv-A: Track A (the HF backend)
 
@@ -24,23 +24,29 @@ Variants on venv-A (`backend.inference_backend: hf`): `fp16`, `int4-nf4`,
 
 ## venv-B: Track B (serving and quantise)
 
-A second, separate venv, pinned against the real CUDA build on the pod rather than in
-`uv.lock`. Install order has one coupling that bites: vLLM pins a specific torch build, so
-it goes first and fixes torch and transformers; do not pre-pin torch or add transformers
-5.x, which llmcompressor rejects.
+A second, separate venv on the local disk (`/root`, not `/workspace`, so torch imports in
+~4s instead of ~48s off MooseFS), pinned against the real CUDA build on the pod rather than
+in `uv.lock`. The install is one uv resolution pass: a split install lets vLLM's unbounded
+`transformers>=5.5.3` pull a newer transformers, which drops llmcompressor to its
+transformers-4 line and fails with `Could not import module 'PreTrainedModel'`. The
+`--override` reconciles vLLM's `compressed-tensors==0.17.0` with llmcompressor's `==0.17.1`,
+and `UV_TORCH_BACKEND=cu128` makes torch 2.11.0 pick the CUDA 12.8 wheel.
 
 ```bash
-uv venv /workspace/.venv-trackB && source /workspace/.venv-trackB/bin/activate
-uv pip install "vllm>=0.8"                 # V1 engine; fixes torch + transformers (< 5)
-uv pip install llmcompressor compressed-tensors accelerate gptqmodel torchao
+uv venv /root/.venv-trackB && source /root/.venv-trackB/bin/activate
+printf 'compressed-tensors==0.17.1\n' > /tmp/ct-override.txt
+UV_TORCH_BACKEND=cu128 uv pip install --override /tmp/ct-override.txt \
+  vllm==0.25.1 transformers==5.10.1 compressed-tensors==0.17.1 \
+  llmcompressor==0.12.0 accelerate==1.13.0 gptqmodel==7.1.0 torchao==0.17.0
 CMAKE_ARGS="-DGGML_CUDA=on" uv pip install llama-cpp-python --no-cache-dir
 uv pip install -e .                        # frontier + frontier-quantize entry points
 ```
 
-Verify `torch.version.cuda` matches the pod after the vLLM install. Do not install
-`bitsandbytes` here (it is Track-A-only), and do not install `transformers>=5` (vLLM and
-llmcompressor choose the compatible `< 5` version). Runs `frontier-quantize` (the
-compressed-tensors and GGUF producers) and the `vllm` / `llama_cpp` `frontier run`.
+`scripts/pod/bootstrap_trackb.sh` runs exactly this, and the pre-baked image
+(`docker/`) bakes it in so the pod skips the install. Verify `torch.version.cuda` matches
+the pod after install. Do not install `bitsandbytes` here (it is Track-A-only), and do not
+loosen the transformers pin above 5.10.1 (llmcompressor rejects it). Runs `frontier-quantize`
+(the compressed-tensors and GGUF producers) and the `vllm` / `llama_cpp` `frontier run`.
 
 Variants on venv-B: `int4-gptq`, `int4-awq`, `int8-w8a8` (`vllm`), `gguf-q4_k_m`,
 `gguf-q5_k_m` (`llama_cpp`), and the `fp16-vllm` fidelity gate.
