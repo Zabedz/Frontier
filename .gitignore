@@ -42,6 +42,10 @@ results/*.parquet
 results/*.parquet.tmp
 results/predictions/
 plots/
+logs/                     # mirrored pod job logs + the watcher heartbeat log
+
+# Pod harness: the connection details are ephemeral (per pod), kept local
+scripts/pod/env.sh
 
 # OS
 .DS_Store
