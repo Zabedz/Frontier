@@ -1,0 +1,4 @@
+# The image only copies pyproject.toml and uv.lock; keep the context to those.
+*
+!pyproject.toml
+!uv.lock

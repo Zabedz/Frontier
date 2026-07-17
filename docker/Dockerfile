@@ -43,17 +43,32 @@ RUN uv sync --frozen --group hf --group oracles --no-install-project
 # does `from transformers import PreTrainedModel` against the 4.x lazy-module layout and
 # fails with "Could not import module 'PreTrainedModel'". The --override reconciles the one
 # real clash: vllm pins compressed-tensors==0.17.0, llmcompressor pins ==0.17.1 (an
-# API-identical patch bump). UV_TORCH_BACKEND=cu128 makes torch 2.11.0 resolve to the CUDA
-# 12.8 wheel; the version pin alone does not choose the CUDA build. The import probe below
-# is the exact regression guard (it triggers the PreTrainedModel path) and runs CPU-only.
-# The GGUF build is non-fatal (llama.cpp is a latency track only).
+# API-identical patch bump).
+#
+# Torch wheels: vllm needs torchcodec>=0.14 and the cu128 index stops at 0.11.1, so
+# UV_TORCH_BACKEND=cu128 (which routes every torch-family package to that index
+# exclusively) cannot resolve. The torch trio is pinned to its +cu128 builds by name,
+# torchcodec to 0.14.0 (the torch 2.11 pairing; torchcodec declares no torch requirement
+# in its metadata, so the resolver cannot check this), and --index-strategy
+# unsafe-best-match lets each pin pull from whichever index carries that exact build:
+# the trio and torchao from the cu128 index, torchcodec from PyPI. torchcodec is dead
+# weight here (text-only benchmark, and its decoder needs an FFmpeg the image does not
+# ship); it exists to satisfy vllm's requirement.
+#
+# The import probe below is the exact regression guard (it triggers the PreTrainedModel
+# path) and runs CPU-only; the torch assert catches a silent fallback to a non-CUDA-12.8
+# build. The GGUF build is non-fatal (llama.cpp is a latency track only).
 RUN uv venv /root/.venv-trackB \
  && . /root/.venv-trackB/bin/activate \
  && printf 'compressed-tensors==0.17.1\n' > /tmp/ct-override.txt \
- && UV_TORCH_BACKEND=cu128 uv pip install --override /tmp/ct-override.txt \
+ && uv pip install --override /tmp/ct-override.txt \
+      --extra-index-url https://download.pytorch.org/whl/cu128 \
+      --index-strategy unsafe-best-match \
+      torch==2.11.0+cu128 torchaudio==2.11.0+cu128 torchvision==0.26.0+cu128 \
+      torchcodec==0.14.0 \
       vllm==0.25.1 transformers==5.10.1 compressed-tensors==0.17.1 \
       llmcompressor==0.12.0 accelerate==1.13.0 gptqmodel==7.1.0 torchao==0.17.0 \
- && python -c "import transformers, compressed_tensors, llmcompressor; print('trackB import OK: transformers', transformers.__version__, 'ct', compressed_tensors.__version__)" \
+ && python -c "import torch, transformers, compressed_tensors, llmcompressor; assert torch.__version__ == '2.11.0+cu128', torch.__version__; print('trackB import OK: torch', torch.__version__, 'transformers', transformers.__version__, 'ct', compressed_tensors.__version__)" \
  && ( CMAKE_ARGS="-DGGML_CUDA=on" uv pip install llama-cpp-python --no-cache-dir \
       || echo "WARN: llama-cpp-python CUDA build failed at image time; GGUF unavailable" )
 

@@ -29,13 +29,22 @@ A second, separate venv on the local disk (`/root`, not `/workspace`, so torch i
 in `uv.lock`. The install is one uv resolution pass: a split install lets vLLM's unbounded
 `transformers>=5.5.3` pull a newer transformers, which drops llmcompressor to its
 transformers-4 line and fails with `Could not import module 'PreTrainedModel'`. The
-`--override` reconciles vLLM's `compressed-tensors==0.17.0` with llmcompressor's `==0.17.1`,
-and `UV_TORCH_BACKEND=cu128` makes torch 2.11.0 pick the CUDA 12.8 wheel.
+`--override` reconciles vLLM's `compressed-tensors==0.17.0` with llmcompressor's `==0.17.1`.
+The torch trio is pinned to its `+cu128` builds by name; `UV_TORCH_BACKEND=cu128` cannot be
+used because it routes every torch-family package to the cu128 index exclusively, and vLLM's
+`torchcodec>=0.14` only exists on PyPI (the cu128 index stops at 0.11.1). torchcodec 0.14.0
+is the torch 2.11 pairing (its metadata declares no torch requirement, so the resolver
+cannot check this), and `--index-strategy unsafe-best-match` lets each pin pull from
+whichever index has that exact build.
 
 ```bash
 uv venv /root/.venv-trackB && source /root/.venv-trackB/bin/activate
 printf 'compressed-tensors==0.17.1\n' > /tmp/ct-override.txt
-UV_TORCH_BACKEND=cu128 uv pip install --override /tmp/ct-override.txt \
+uv pip install --override /tmp/ct-override.txt \
+  --extra-index-url https://download.pytorch.org/whl/cu128 \
+  --index-strategy unsafe-best-match \
+  torch==2.11.0+cu128 torchaudio==2.11.0+cu128 torchvision==0.26.0+cu128 \
+  torchcodec==0.14.0 \
   vllm==0.25.1 transformers==5.10.1 compressed-tensors==0.17.1 \
   llmcompressor==0.12.0 accelerate==1.13.0 gptqmodel==7.1.0 torchao==0.17.0
 CMAKE_ARGS="-DGGML_CUDA=on" uv pip install llama-cpp-python --no-cache-dir

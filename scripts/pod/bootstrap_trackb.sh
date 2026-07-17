@@ -21,7 +21,8 @@ ENV
 
 echo "[trackb] launching venv-B setup as job 'setup-trackb' (pre-baked image links in seconds; a cold pod builds it in one uv pass)"
 # One resolution pass with a compressed-tensors override; docker/Dockerfile explains why a
-# split install reproduces the PreTrainedModel import failure. Do NOT add bitsandbytes here.
+# split install reproduces the PreTrainedModel import failure and why torchcodec comes
+# from PyPI while the torch trio is pinned to +cu128. Do NOT add bitsandbytes here.
 "$_HERE/run_job.sh" setup-trackb '
 set -e
 export PATH=$HOME/.local/bin:$PATH
@@ -35,7 +36,11 @@ else
   uv venv --clear /root/.venv-trackB
   source /root/.venv-trackB/bin/activate
   printf "compressed-tensors==0.17.1\n" > /tmp/ct-override.txt
-  UV_TORCH_BACKEND=cu128 uv pip install --override /tmp/ct-override.txt \
+  uv pip install --override /tmp/ct-override.txt \
+    --extra-index-url https://download.pytorch.org/whl/cu128 \
+    --index-strategy unsafe-best-match \
+    torch==2.11.0+cu128 torchaudio==2.11.0+cu128 torchvision==0.26.0+cu128 \
+    torchcodec==0.14.0 \
     vllm==0.25.1 transformers==5.10.1 compressed-tensors==0.17.1 \
     llmcompressor==0.12.0 accelerate==1.13.0 gptqmodel==7.1.0 torchao==0.17.0
 fi
