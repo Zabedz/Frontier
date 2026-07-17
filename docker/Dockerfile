@@ -43,7 +43,9 @@ RUN uv sync --frozen --group hf --group oracles --no-install-project
 # does `from transformers import PreTrainedModel` against the 4.x lazy-module layout and
 # fails with "Could not import module 'PreTrainedModel'". The --override reconciles the one
 # real clash: vllm pins compressed-tensors==0.17.0, llmcompressor pins ==0.17.1 (an
-# API-identical patch bump).
+# API-identical patch bump). frontier's own base deps (-r pyproject.toml) ride the same
+# pass, so venv-B is self-sufficient and the pod-start link is `uv pip install -e .
+# --no-deps`: after this layer, no later resolve can move any of these pins.
 #
 # Torch wheels: vllm needs torchcodec>=0.14 and the cu128 index stops at 0.11.1, so
 # UV_TORCH_BACKEND=cu128 (which routes every torch-family package to that index
@@ -64,6 +66,7 @@ RUN uv venv /root/.venv-trackB \
  && uv pip install --override /tmp/ct-override.txt \
       --extra-index-url https://download.pytorch.org/whl/cu128 \
       --index-strategy unsafe-best-match \
+      -r pyproject.toml \
       torch==2.11.0+cu128 torchaudio==2.11.0+cu128 torchvision==0.26.0+cu128 \
       torchcodec==0.14.0 \
       vllm==0.25.1 transformers==5.10.1 compressed-tensors==0.17.1 \
@@ -71,6 +74,26 @@ RUN uv venv /root/.venv-trackB \
  && python -c "import torch, transformers, compressed_tensors, llmcompressor; assert torch.__version__ == '2.11.0+cu128', torch.__version__; print('trackB import OK: torch', torch.__version__, 'transformers', transformers.__version__, 'ct', compressed_tensors.__version__)" \
  && ( CMAKE_ARGS="-DGGML_CUDA=on" uv pip install llama-cpp-python --no-cache-dir \
       || echo "WARN: llama-cpp-python CUDA build failed at image time; GGUF unavailable" )
+
+# llama.cpp native tools, pinned to the exact commit llama-cpp-python 0.3.34 vendors, so
+# llama-bench and llama-quantize run the same llama.cpp build the eval bindings do. The
+# GGUF producer runs the repo's convert_hf_to_gguf.py (its gguf-py package goes into
+# venv-B; --no-deps so a second resolve can never move the venv's pins) and
+# llama-quantize; the latency probe calls llama-bench off PATH. Non-fatal, matching the
+# bindings build above: GGUF is a latency track and must not sink the vLLM path.
+RUN ( git init /opt/llama.cpp \
+ && git -C /opt/llama.cpp remote add origin https://github.com/ggml-org/llama.cpp \
+ && git -C /opt/llama.cpp fetch --depth 1 origin e3546c7948e3af463d0b401e6421d5a4c2faf565 \
+ && git -C /opt/llama.cpp checkout FETCH_HEAD \
+ && cmake -S /opt/llama.cpp -B /opt/llama.cpp/build -G Ninja \
+      -DGGML_CUDA=ON -DLLAMA_BUILD_TESTS=OFF \
+ && cmake --build /opt/llama.cpp/build --target llama-quantize llama-bench \
+ && . /root/.venv-trackB/bin/activate \
+ && uv pip install --no-deps /opt/llama.cpp/gguf-py \
+ || echo "WARN: llama.cpp tools build failed at image time; GGUF producer and bench unavailable" )
+ENV FRONTIER_LLAMA_CPP_REPO=/opt/llama.cpp
+ENV FRONTIER_LLAMA_QUANTIZE_BIN=/opt/llama.cpp/build/bin/llama-quantize
+ENV PATH="/opt/llama.cpp/build/bin:${PATH}"
 
 # Weights and checkpoints go on the pod's persistent volume, not the image.
 ENV HF_HOME=/workspace/frontier/hf-cache

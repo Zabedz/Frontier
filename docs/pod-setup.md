@@ -43,12 +43,14 @@ printf 'compressed-tensors==0.17.1\n' > /tmp/ct-override.txt
 uv pip install --override /tmp/ct-override.txt \
   --extra-index-url https://download.pytorch.org/whl/cu128 \
   --index-strategy unsafe-best-match \
+  -r pyproject.toml \
   torch==2.11.0+cu128 torchaudio==2.11.0+cu128 torchvision==0.26.0+cu128 \
   torchcodec==0.14.0 \
   vllm==0.25.1 transformers==5.10.1 compressed-tensors==0.17.1 \
   llmcompressor==0.12.0 accelerate==1.13.0 gptqmodel==7.1.0 torchao==0.17.0
 CMAKE_ARGS="-DGGML_CUDA=on" uv pip install llama-cpp-python --no-cache-dir
-uv pip install -e .                        # frontier + frontier-quantize entry points
+uv pip install -e . --no-deps              # frontier + frontier-quantize entry points;
+                                           # base deps rode the single pass above
 ```
 
 `scripts/pod/bootstrap_trackb.sh` runs exactly this, and the pre-baked image
@@ -56,6 +58,15 @@ uv pip install -e .                        # frontier + frontier-quantize entry 
 the pod after install. Do not install `bitsandbytes` here (it is Track-A-only), and do not
 loosen the transformers pin above 5.10.1 (llmcompressor rejects it). Runs `frontier-quantize`
 (the compressed-tensors and GGUF producers) and the `vllm` / `llama_cpp` `frontier run`.
+
+The image also bakes the llama.cpp native tools at `/opt/llama.cpp`, pinned to the commit
+llama-cpp-python 0.3.34 vendors so the bench binary and the eval bindings run the same
+build. The GGUF producer reads `FRONTIER_LLAMA_CPP_REPO` (the repo, for
+`convert_hf_to_gguf.py`; its `gguf-py` is installed into venv-B with `--no-deps`) and
+`FRONTIER_LLAMA_QUANTIZE_BIN`; the latency probe calls `llama-bench` off `PATH`
+(`/opt/llama.cpp/build/bin`). `bootstrap_trackb.sh` writes all three into the job env and
+warns when the tools are missing (a pod not on the pre-baked image): GGUF variants then
+cannot run, the vLLM path is unaffected.
 
 Variants on venv-B: `int4-gptq`, `int4-awq`, `int8-w8a8` (`vllm`), `gguf-q4_k_m`,
 `gguf-q5_k_m` (`llama_cpp`), and the `fp16-vllm` fidelity gate.

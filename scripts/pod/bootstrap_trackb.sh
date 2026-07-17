@@ -17,6 +17,11 @@ export VIRTUAL_ENV=/root/.venv-trackB
 export PATH=/root/.venv-trackB/bin:$PATH
 export HF_HOME=/workspace/frontier/hf-cache
 export UV_CACHE_DIR=/workspace/uv-cache
+# llama.cpp tools baked into the pod image (docker/Dockerfile): the GGUF producer and
+# the llama-bench latency probe read these.
+export FRONTIER_LLAMA_CPP_REPO=/opt/llama.cpp
+export FRONTIER_LLAMA_QUANTIZE_BIN=/opt/llama.cpp/build/bin/llama-quantize
+export PATH=/opt/llama.cpp/build/bin:$PATH
 ENV
 
 echo "[trackb] launching venv-B setup as job 'setup-trackb' (pre-baked image links in seconds; a cold pod builds it in one uv pass)"
@@ -39,13 +44,17 @@ else
   uv pip install --override /tmp/ct-override.txt \
     --extra-index-url https://download.pytorch.org/whl/cu128 \
     --index-strategy unsafe-best-match \
+    -r /workspace/frontier/pyproject.toml \
     torch==2.11.0+cu128 torchaudio==2.11.0+cu128 torchvision==0.26.0+cu128 \
     torchcodec==0.14.0 \
     vllm==0.25.1 transformers==5.10.1 compressed-tensors==0.17.1 \
     llmcompressor==0.12.0 accelerate==1.13.0 gptqmodel==7.1.0 torchao==0.17.0
 fi
-cd /workspace/frontier && uv pip install -e .
+cd /workspace/frontier && uv pip install -e . --no-deps
 python -c "import vllm, llmcompressor, transformers, torch; print(\"vllm\", vllm.__version__, \"transformers\", transformers.__version__, \"torch\", torch.__version__, \"cuda\", torch.cuda.is_available())"
+if [ ! -x /opt/llama.cpp/build/bin/llama-quantize ]; then
+  echo "WARN: llama.cpp tools missing (pod not on the pre-baked image?); GGUF variants and llama-bench latency unavailable, vLLM path intact"
+fi
 # GGUF is a latency track only; a llama.cpp CUDA build failure must not sink the vLLM path
 if ! /root/.venv-trackB/bin/python -c "import llama_cpp" 2>/dev/null; then
   CMAKE_ARGS="-DGGML_CUDA=on" uv pip install "llama-cpp-python" --no-cache-dir || echo "WARN: llama-cpp-python CUDA build failed; GGUF unavailable, vLLM path intact"
