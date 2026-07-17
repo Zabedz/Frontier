@@ -81,15 +81,24 @@ RUN uv venv /root/.venv-trackB \
 # venv-B; --no-deps so a second resolve can never move the venv's pins) and
 # llama-quantize; the latency probe calls llama-bench off PATH. Non-fatal, matching the
 # bindings build above: GGUF is a latency track and must not sink the vLLM path.
+# The build container has no GPU driver, so the executables resolve libggml-cuda's
+# libcuda.so.1 against the CUDA driver stub via -rpath-link: link-time resolution only,
+# nothing recorded in the binary, and the pod's injected real driver is used at runtime.
 RUN ( git init /opt/llama.cpp \
  && git -C /opt/llama.cpp remote add origin https://github.com/ggml-org/llama.cpp \
  && git -C /opt/llama.cpp fetch --depth 1 origin e3546c7948e3af463d0b401e6421d5a4c2faf565 \
  && git -C /opt/llama.cpp checkout FETCH_HEAD \
+ && mkdir -p /tmp/cuda-stubs \
+ && ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /tmp/cuda-stubs/libcuda.so.1 \
  && cmake -S /opt/llama.cpp -B /opt/llama.cpp/build -G Ninja \
       -DGGML_CUDA=ON -DLLAMA_BUILD_TESTS=OFF \
+      -DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath-link,/tmp/cuda-stubs \
  && cmake --build /opt/llama.cpp/build --target llama-quantize llama-bench \
  && . /root/.venv-trackB/bin/activate \
  && uv pip install --no-deps /opt/llama.cpp/gguf-py \
+ && test -x /opt/llama.cpp/build/bin/llama-bench \
+ && test -x /opt/llama.cpp/build/bin/llama-quantize \
+ && python -c "import gguf; print('llama tools OK: gguf-py present, binaries built')" \
  || echo "WARN: llama.cpp tools build failed at image time; GGUF producer and bench unavailable" )
 ENV FRONTIER_LLAMA_CPP_REPO=/opt/llama.cpp
 ENV FRONTIER_LLAMA_QUANTIZE_BIN=/opt/llama.cpp/build/bin/llama-quantize
