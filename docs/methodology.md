@@ -47,6 +47,12 @@ count (it is biased and bin-sensitive, and can invert the conclusion).
   loop; it serialises and inflates fast steps.
 - Discard the first 2-5 iterations (warmup). >=20 trials. Median and p95, never
   mean.
+- Track-B peak VRAM semantics: numbers are read while the workload is alive, at the
+  reference context length only (the analytic `kv_cache_mb` column carries the context
+  scaling). For vLLM, "peak" is the engine's preallocated pool (0.9 of the card, pinned
+  explicitly at serve time), so `tok_s_per_gb`'s denominator is the serving reservation
+  and variants separate on the throughput numerator; for llama.cpp it is the max of a
+  0.5s-interval sample of `nvidia-smi` while `llama-bench` runs.
 
 ## 5. Quiet machine, honestly
 

@@ -25,7 +25,36 @@ image (see `docker/`). This replaces the earlier single-`gpu`-group sketch, whic
 self-contradictory (it listed transformers>=5.0 alongside llmcompressor, which cannot
 co-resolve).
 
-### 2026-07-16 GATE: the vLLM latency probe is unvalidated, fix it on the pod (OPEN)
+### 2026-07-17 vLLM latency: bench serve against a probe-owned server (SETTLED; one watched pod run before banking rows)
+Settles the 2026-07-16 gate below. `NativeVllmLatency` now serves the artifact the eval
+scored: it starts `vllm serve` on `provider.model` (the compressed-tensors checkpoint
+dir, or the base model id for the FP16 fidelity gate) itself, drives `vllm bench serve`
+against that server once per batch size over `--base-url`, parses the saved result JSON,
+and tears the server down in a `finally`. `bench serve` wins over `bench latency` because
+its result JSON carries the median/p95 TTFT and TPOT split `schema.Latency` requires,
+while `bench latency` emits a single end-to-end time the two-clocks rule cannot use.
+The command set and result keys were checked against the vllm 0.25.1 source
+(`vllm/benchmarks/serve.py`): `--percentile-metrics ttft,tpot --metric-percentiles 95`
+emits exactly the keys `parse_vllm_bench` reads, and the bench waits up to 600s for the
+endpoint, which absorbs the server's model-load window; a dead server is turned into a
+loud `RuntimeError` carrying the server log tail. The lifecycle is safe because the
+runner probes latency before the seed loop and the provider builds its engine lazily, so
+the served instance has the GPU to itself and is gone before eval loads. Operating
+point: input length `context_lengths[0]`, output length `FULL_DECODE_LEN` (held there by
+`--ignore-eos`), `num_prompts = batch_size * n_trials`, `--max-concurrency = batch_size`,
+mirroring the WP4 rig; the server runs with prefix caching off (one server serves all
+three batch sizes, and a repeated random prefix would warm the later TTFTs) and an
+explicit `--gpu-memory-utilization` pinned to the eval engine's 0.9. The
+fix also widened one step past the gate's scope: peak VRAM is now read while the
+workload is alive (a point read under the running server for vLLM, a background
+`VramSampler` around `llama-bench` for GGUF), because the previous read-after-exit in
+`_assemble` saw an idle GPU and would have inflated `tok_s_per_gb` for both Track-B
+backends; the earlier "llama probe not implicated" note was wrong about that one shared
+read. Still owed on the pod before any Track-B row is banked: one watched end-to-end run
+(server boot on a real checkpoint dir, bench completes, numbers sane), alongside the
+existing max_logprobs and fidelity verifications.
+
+### 2026-07-16 GATE: the vLLM latency probe is unvalidated, fix it on the pod (SUPERSEDED 2026-07-17)
 `frontier.latency.native.NativeVllmLatency` is not yet correct and must be fixed against
 real vLLM on the pod before any Track-B vLLM latency number is recorded. Two faults need a
 GPU to settle, so they are not guessed blind. First, it benchmarks the wrong artifact: the
