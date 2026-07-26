@@ -1,5 +1,12 @@
 # Pod setup
 
+Provision the pod with an r580 or newer driver, 60GB of container disk, and TCP port 22
+exposed. The driver is the hard one: venv-B follows vLLM onto CUDA 13
+(`docs/decisions.md` 2026-07-26), and an r570 driver caps at CUDA 12.8, which starts the
+HF, quantise, and GGUF paths fine and fails vLLM with
+`cudaErrorInsufficientDriver`. Port 22 is what lets the harness rsync; the
+`ssh.runpod.io` proxy forces a PTY and corrupts rsync's stream.
+
 The GPU stack is pod-only and splits into two separate venvs. The two tracks pin different,
 non-overlapping transformers versions and cannot co-resolve in one environment: Track A's HF
 backend tracks the latest transformers 5.x (the `dtype=` API), while the Track-B
@@ -109,9 +116,10 @@ install instructions; it is never on the CPU smoke path.
 
 ## Disk layout: local-disk venv, persistent volume for weights
 
-The pod's venv lives on the small local disk (~12GB), and the venv plus vLLM alone
-approaches that cap. Everything large lives on the persistent volume, set before the
-first install:
+The pod's venvs live on the local container disk. Ask for 60GB of it: the pre-baked
+image's own layers do not count against that space, but a cold install does, and venv-A
+alone measures 7.6GB with venv-B larger still. Everything large lives on the persistent
+volume, set before the first install:
 
 - `export HF_HOME=/workspace/hf` so the base Qwen2.5-3B (~6GB) and every downloaded
   model land on the volume, not the local disk.

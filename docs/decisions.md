@@ -4,6 +4,37 @@ Newest first. Each entry: the decision, the reasoning, and whether it is settled
 or provisional. Kept current as the project evolves; this is the memory of why
 things are the way they are.
 
+### 2026-07-26 vLLM needs an r580+ pod, and that is a provisioning rule, not an image change (SETTLED)
+Every published vLLM wheel's compiled extension links `libcudart.so.13`, checked directly
+with `ldd` on both 0.25.1 and 0.21.0. The `[cu13]` markers in 0.25.1's metadata are not
+the deciding factor: 0.21.0 carries a plain `nvidia-cutlass-dsl==4.4.2` and its extension
+still links the CUDA 13 runtime, so downgrading vLLM does not escape it and no cu128 wheel
+exists to select. That runtime already ships inside the image under
+`site-packages/nvidia/cu13/lib`; it is simply off the default loader path, so
+`bootstrap_trackb.sh` and the image both put it on `LD_LIBRARY_PATH`. What is left is a
+driver floor: CUDA 13 needs r580 or newer, and on the r570 pod the import resolved and
+CUDA init then returned error 35, `cudaErrorInsufficientDriver`. So the image is unchanged
+and pods are provisioned on r580+. Rebuilding the image onto a CUDA 13 base was considered
+and rejected: it costs a ~17GB rebuild and push to fix something a pod filter fixes for
+free, and the mixed cu128-torch/cu13-vLLM venv imports cleanly because vLLM builds its
+extension against torch's stable ABI.
+
+The mismatch shipped green because the image's build probe imported torch, transformers,
+compressed_tensors, and llmcompressor but not vLLM. Add vLLM to that probe at the next
+rebuild, whenever one happens for another reason.
+
+### 2026-07-26 GGUF latency is single-stream and says so (SETTLED)
+`llama-bench`'s `-b` is llama.cpp's prefill chunk size, not a count of concurrent
+requests, and the probe was feeding it the eval's batch axis. That measured how fast a
+prompt is chunked rather than how the model serves load: `-b 1` prefills one token at a
+time, so the banked TTFT fell from 2490ms to 273ms as "batch size" rose, while throughput
+sat flat at ~207 tok/s across all three because llama-bench always generates
+single-stream. The axis was measuring an artifact. A GGUF row now takes one measurement
+at llama.cpp's default chunk size and reports one latency entry labelled batch size 1,
+which is what the tool actually measures, and passes `-r` so the GGUF track meets the
+same >=20 repetition floor as the HF rig. This keeps the existing rule that a GGUF tok/s
+never shares a column with a vLLM or HF one.
+
 ### 2026-07-16 Track B runs in a separate pod venv from Track A (SETTLED)
 The two tracks pin different, non-overlapping transformers versions and cannot share one
 environment. Track A's HF backend tracks the latest transformers 5.x (the `dtype=` API);
