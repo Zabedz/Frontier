@@ -15,7 +15,8 @@ _SSH_E="ssh -p $POD_PORT -i $POD_KEY -o BatchMode=yes -o ConnectTimeout=15 -o Se
 # Never push generated, heavy, or local-only trees to the pod. .jobs and results live
 # on the pod and are protected from --delete by being excluded here.
 _PUSH_EXCLUDES=(--exclude '.venv' --exclude 'results' --exclude 'plots' --exclude 'logs'
-                --exclude 'checkpoints' --exclude '.jobs' --exclude '__pycache__'
+                --exclude 'checkpoints' --exclude '.jobs' --exclude 'hf-cache'
+                --exclude '__pycache__'
                 --exclude '.mypy_cache' --exclude '.ruff_cache' --exclude '.pytest_cache'
                 --exclude '.DS_Store')
 

@@ -42,6 +42,7 @@ runs/
 results/*.jsonl
 results/*.parquet
 results/*.parquet.tmp
+results/*.bak-*
 results/predictions/
 plots/
 # mirrored pod job logs + the watcher heartbeat log

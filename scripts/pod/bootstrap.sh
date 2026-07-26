@@ -24,6 +24,9 @@ pod_ssh "cat > $POD_DIR/.jobs/env" <<'ENV'
 export PATH=$HOME/.local/bin:$PATH
 export UV_PROJECT_ENVIRONMENT=/root/frontier-venv
 export HF_HOME=/workspace/frontier/hf-cache
+# A cold install downloads GBs of torch wheels. The container disk is small enough that
+# the cache and the venv cannot both sit on it, so the cache goes on the volume.
+export UV_CACHE_DIR=/workspace/frontier/uv-cache
 ENV
 
 echo "[bootstrap] installing job wrapper"
