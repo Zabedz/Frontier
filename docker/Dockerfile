@@ -104,7 +104,18 @@ ENV FRONTIER_LLAMA_CPP_REPO=/opt/llama.cpp
 ENV FRONTIER_LLAMA_QUANTIZE_BIN=/opt/llama.cpp/build/bin/llama-quantize
 ENV PATH="/opt/llama.cpp/build/bin:${PATH}"
 
+# Two libraries the default loader path gets wrong, both confirmed on a pod:
+# nccl, because the base image's /usr/lib copy is 2.25.1 and predates ncclCommShrink,
+# which llama_cpp drags in ahead of the venv's 2.28.9 and breaks a later torch import;
+# and the CUDA 13 runtime, which every published vLLM wheel's extension links against and
+# which ships under nvidia/cu13 rather than on the path. The latter also needs an r580+
+# driver: on r570 the import resolves and CUDA init returns cudaErrorInsufficientDriver.
+ENV LD_LIBRARY_PATH="/root/.venv-trackB/lib/python3.11/site-packages/nvidia/nccl/lib:/root/.venv-trackB/lib/python3.11/site-packages/nvidia/cu13/lib:${LD_LIBRARY_PATH}"
+
 # Weights and checkpoints go on the pod's persistent volume, not the image.
 ENV HF_HOME=/workspace/frontier/hf-cache
 
-CMD ["/bin/bash"]
+# A long-running process, so the container stays up for the pod's lifetime. An
+# interactive shell here reads EOF and exits the moment the container starts without a
+# TTY, which leaves the pod green in the console but its container dead and unreachable.
+CMD ["sleep", "infinity"]

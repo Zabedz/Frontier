@@ -70,6 +70,14 @@ class LlamaCppLogitProvider:
         self._build_llama()  # pragma: no cover
 
     def _build_llama(self) -> None:  # pragma: no cover
+        # torch is imported first for its side effect on the dynamic loader. The CUDA base
+        # image ships libnccl 2.25.1 in /usr/lib, which predates ncclCommShrink;
+        # llama_cpp's CUDA libraries pull that copy into the process, and torch's
+        # libtorch_cuda.so then fails to resolve the symbol against it. Importing torch
+        # first binds the nccl 2.28.9 that ships inside the venv, and llama_cpp is
+        # content with either (it uses no collectives).
+        # I001 is suppressed because import sorting would put llama_cpp first and undo this.
+        import torch  # noqa: F401, I001, PLC0415
         import llama_cpp  # noqa: PLC0415
         import transformers  # noqa: PLC0415
 

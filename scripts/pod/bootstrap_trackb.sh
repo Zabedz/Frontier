@@ -17,6 +17,14 @@ export VIRTUAL_ENV=/root/.venv-trackB
 export PATH=/root/.venv-trackB/bin:$PATH
 export HF_HOME=/workspace/frontier/hf-cache
 export UV_CACHE_DIR=/workspace/uv-cache
+# The venv's nccl must outrank the CUDA image's /usr/lib copy (2.25.1, which predates
+# ncclCommShrink). Any process that loads llama_cpp before torch pulls in the system
+# copy, and torch's libtorch_cuda.so then fails to resolve that symbol.
+# vLLM's compiled extension links libcudart.so.13 (true of every published wheel, 0.21.0
+# and 0.25.1 alike), and that runtime ships in the venv under nvidia/cu13 rather than on
+# the default loader path. Needs a driver that supports CUDA 13: on r570 the import
+# resolves and cudaGetDeviceCount then returns 35, cudaErrorInsufficientDriver.
+export LD_LIBRARY_PATH=/root/.venv-trackB/lib/python3.11/site-packages/nvidia/nccl/lib:/root/.venv-trackB/lib/python3.11/site-packages/nvidia/cu13/lib:${LD_LIBRARY_PATH:-}
 # llama.cpp tools baked into the pod image (docker/Dockerfile): the GGUF producer and
 # the llama-bench latency probe read these.
 export FRONTIER_LLAMA_CPP_REPO=/opt/llama.cpp
@@ -26,8 +34,9 @@ ENV
 
 echo "[trackb] launching venv-B setup as job 'setup-trackb' (pre-baked image links in seconds; a cold pod builds it in one uv pass)"
 # One resolution pass with a compressed-tensors override; docker/Dockerfile explains why a
-# split install reproduces the PreTrainedModel import failure and why torchcodec comes
-# from PyPI while the torch trio is pinned to +cu128. Do NOT add bitsandbytes here.
+# split install reproduces the PreTrainedModel import failure. Torch is left to vllm's own
+# pin so the venv stays on one CUDA line, which needs an r580+ driver. Do NOT add
+# bitsandbytes here.
 "$_HERE/run_job.sh" setup-trackb '
 set -e
 export PATH=$HOME/.local/bin:$PATH
@@ -42,11 +51,7 @@ else
   source /root/.venv-trackB/bin/activate
   printf "compressed-tensors==0.17.1\n" > /tmp/ct-override.txt
   uv pip install --override /tmp/ct-override.txt \
-    --extra-index-url https://download.pytorch.org/whl/cu128 \
-    --index-strategy unsafe-best-match \
     -r /workspace/frontier/pyproject.toml \
-    torch==2.11.0+cu128 torchaudio==2.11.0+cu128 torchvision==0.26.0+cu128 \
-    torchcodec==0.14.0 \
     vllm==0.25.1 transformers==5.10.1 compressed-tensors==0.17.1 \
     llmcompressor==0.12.0 accelerate==1.13.0 gptqmodel==7.1.0 torchao==0.17.0
 fi
