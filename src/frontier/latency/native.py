@@ -65,6 +65,10 @@ ABSENT_MACHINE_STATE = MachineState(0, 0, 0, 0.0, clocks_locked=False, clock_dri
 SERVER_STOP_TIMEOUT_S = 30.0
 VRAM_SAMPLE_INTERVAL_S = 0.5
 LOG_TAIL_LINES = 40
+# llama-bench generates single-stream, so a GGUF row carries one latency entry and labels
+# it batch size 1 rather than repeating the same measurement under the eval's batch axis.
+SINGLE_STREAM_BATCH = 1
+LLAMA_BENCH_DECODE_LEN = 128
 # The same fraction the eval engine requests (backends/vllm.py), so the bench's resident
 # pool is the pool the eval ran under; it is also the peak-VRAM definition for vLLM rows
 # (docs/methodology.md): vLLM preallocates, so peak is the pool, and this pins it against
@@ -350,30 +354,22 @@ class NativeLlamaCppLatency:
         machine = self._machine
         locked = self._clock_lock()
         context_len = spec.context_lengths[0]
-        latency: list[Latency] = []
-        throughput: dict[int, float] = {}
-        vram_by_batch: dict[int, float] = {}
-        for batch_size in spec.batch_sizes:
-            before = machine.capture()
-            with VramSampler(self._read_vram_mb) as sampler:
-                runs = self._run_json(
-                    _llama_bench_command(gguf_path, resolved, batch_size, context_len)
-                )
-            assert_full_offload(runs, model_layers=dims[0])
-            vram_by_batch[batch_size] = sampler.peak_mb
-            state = to_machine_state(before, machine.capture(), clocks_locked=locked)
-            row = parse_llama_bench(
-                runs, batch_size=batch_size, context_len=context_len, machine_state=state
-            )
-            latency.append(row)
-            throughput[batch_size] = row.throughput_tok_s
+        before = machine.capture()
+        with VramSampler(self._read_vram_mb) as sampler:
+            runs = self._run_json(_llama_bench_command(gguf_path, resolved, context_len))
+        assert_full_offload(runs, model_layers=dims[0])
+        state = to_machine_state(before, machine.capture(), clocks_locked=locked)
+        row = parse_llama_bench(
+            runs, batch_size=SINGLE_STREAM_BATCH, context_len=context_len, machine_state=state
+        )
         return _assemble(
             resolved,
-            latency,
-            throughput,
+            [row],
+            {SINGLE_STREAM_BATCH: row.throughput_tok_s},
             weights_path=gguf_path,
-            vram_by_batch=vram_by_batch,
+            vram_by_batch={SINGLE_STREAM_BATCH: sampler.peak_mb},
             dims=dims,
+            batch_sizes=(SINGLE_STREAM_BATCH,),
         )
 
 
@@ -401,13 +397,17 @@ def _assemble(
     weights_path: Path,
     vram_by_batch: Mapping[int, float],
     dims: tuple[int, int, int],
+    batch_sizes: Sequence[int] | None = None,
 ) -> LatencyMemory:
     spec = resolved.variant.latency
+    # A single-stream backend measures one batch size and says so, rather than reporting
+    # the eval's batch axis it never exercised.
+    sizes = tuple(batch_sizes) if batch_sizes is not None else spec.batch_sizes
     disk_mb = _path_size_mb(weights_path)
     n_layers, n_kv_heads, head_dim = dims
     kv_bytes = 2
     memory: list[Memory] = []
-    for batch_size in spec.batch_sizes:
+    for batch_size in sizes:
         for context_len in spec.context_lengths:
             kv = kv_cache_mb(
                 n_layers=n_layers,
@@ -427,7 +427,7 @@ def _assemble(
                     kv_cache_mb=kv,
                 )
             )
-    reference = max(spec.batch_sizes)
+    reference = max(sizes)
     tok_s_per_gb = cost_proxy(throughput[reference], vram_by_batch[reference])
     return LatencyMemory(latency=latency, memory=memory, tok_s_per_gb=tok_s_per_gb)
 
@@ -499,9 +499,17 @@ def _vllm_bench_command(
     ]
 
 
-def _llama_bench_command(
-    gguf_path: Path, resolved: ResolvedConfig, batch_size: int, context_len: int
-) -> list[str]:
+def _llama_bench_command(gguf_path: Path, resolved: ResolvedConfig, context_len: int) -> list[str]:
+    """The ``llama-bench`` invocation for one GGUF measurement.
+
+    ``-b`` is deliberately not set. It is llama.cpp's prefill chunk size, not a count of
+    concurrent requests, so feeding it the eval's batch sizes measured how fast a prompt
+    is chunked rather than how the model serves load: ``-b 1`` prefills one token at a
+    time and reports a TTFT an order of magnitude off a real deployment's, while the
+    decode rate does not move at all because llama-bench generates single-stream. The
+    default chunk size is what a llama.cpp deployment runs. ``-r`` carries the spec's
+    trial count so the GGUF track meets the same repetition floor as the HF rig.
+    """
     layers = resolved.backend["gpu_offload_layers"]
     return [
         "llama-bench",
@@ -509,12 +517,12 @@ def _llama_bench_command(
         str(gguf_path),
         "-ngl",
         str(layers),
-        "-b",
-        str(batch_size),
         "-p",
         str(context_len),
         "-n",
-        "128",
+        str(LLAMA_BENCH_DECODE_LEN),
+        "-r",
+        str(resolved.variant.latency.n_trials),
         "-o",
         "json",
     ]

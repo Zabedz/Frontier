@@ -14,6 +14,7 @@ from frontier.latency.machine import ClockReading
 from frontier.latency.native import (
     ABSENT_MACHINE_STATE,
     SERVE_GPU_MEMORY_UTILIZATION,
+    SINGLE_STREAM_BATCH,
     NativeLlamaCppLatency,
     NativeVllmLatency,
     VllmServer,
@@ -339,13 +340,22 @@ def test_native_llama_latency_samples_vram_while_bench_runs(tmp_path: Path) -> N
     provider = cast(LogitProvider, _GgufProvider(str(gguf)))
     out = probe(provider, resolved, device="cuda", mode="full")
 
-    assert len(out.latency) == len(spec.batch_sizes)
+    # llama-bench generates single-stream, so one measurement is taken and labelled batch
+    # size 1 rather than repeated once per eval batch size.
+    assert len(out.latency) == 1
+    assert out.latency[0].batch_size == SINGLE_STREAM_BATCH
+    assert len(commands) == 1
+    assert all(entry.batch_size == SINGLE_STREAM_BATCH for entry in out.memory)
+    assert len(out.memory) == len(spec.context_lengths)
     assert all(entry.peak_vram_mb == SAMPLED_VRAM_MB for entry in out.memory)
     assert all(entry.weights_disk_mb == pytest.approx(1.0) for entry in out.memory)
     expected = cost_proxy(percentile(TG_SAMPLES, MEDIAN_Q), SAMPLED_VRAM_MB)
     assert out.tok_s_per_gb == pytest.approx(expected)
-    for command in commands:
-        assert _value_after(command, "-m") == str(gguf)
+    assert _value_after(commands[0], "-m") == str(gguf)
+    # -b is llama.cpp's prefill chunk size, not concurrency, so the eval's batch axis must
+    # never reach it; -r carries the spec's trial floor.
+    assert "-b" not in commands[0]
+    assert _value_after(commands[0], "-r") == str(spec.n_trials)
 
 
 def test_native_llama_latency_rejects_partial_offload(tmp_path: Path) -> None:
