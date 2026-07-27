@@ -49,10 +49,16 @@ count (it is biased and bin-sensitive, and can invert the conclusion).
   mean.
 - Track-B peak VRAM semantics: numbers are read while the workload is alive, at the
   reference context length only (the analytic `kv_cache_mb` column carries the context
-  scaling). For vLLM, "peak" is the engine's preallocated pool (0.9 of the card, pinned
-  explicitly at serve time), so `tok_s_per_gb`'s denominator is the serving reservation
-  and variants separate on the throughput numerator; for llama.cpp it is the max of a
-  0.5s-interval sample of `nvidia-smi` while `llama-bench` runs.
+  scaling). For vLLM, "peak" is the engine's preallocated reservation, so
+  `tok_s_per_gb`'s denominator is the serving reservation and variants separate on the
+  throughput numerator; for llama.cpp it is the max of a 0.5s-interval sample of
+  `nvidia-smi` while `llama-bench` runs.
+- The vLLM reservation is a fixed number of megabytes, not a fixed fraction of the card.
+  `gpu_memory_utilization` is a fraction, so the eval engine and the serve command both
+  derive it per card from `VLLM_MEMORY_BUDGET_MB` (`latency/native.py`). A fixed 0.9
+  would have made every vLLM row's memory and `tok_s_per_gb` a property of the rented
+  card. A card too small to hold the budget under a 0.9 ceiling raises rather than
+  clamps, since a clamped row is not comparable to the others.
 
 ## 5. Quiet machine, honestly
 

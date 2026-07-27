@@ -13,8 +13,9 @@ from frontier.eval.provider import LogitProvider
 from frontier.latency.machine import ClockReading
 from frontier.latency.native import (
     ABSENT_MACHINE_STATE,
-    SERVE_GPU_MEMORY_UTILIZATION,
+    MAX_GPU_MEMORY_FRACTION,
     SINGLE_STREAM_BATCH,
+    VLLM_MEMORY_BUDGET_MB,
     NativeLlamaCppLatency,
     NativeVllmLatency,
     VllmServer,
@@ -24,6 +25,7 @@ from frontier.latency.native import (
     assert_full_offload,
     parse_llama_bench,
     parse_vllm_bench,
+    vllm_memory_fraction,
 )
 from frontier.latency.rig import FULL_DECODE_LEN, cost_proxy
 from frontier.latency.stats import MEDIAN_Q, MS_PER_S, P95_Q, percentile
@@ -49,6 +51,7 @@ BATCH = 4
 MODEL_LAYERS = 36
 DIMS = (MODEL_LAYERS, 8, 128)
 SERVED_VRAM_MB = 9000.0
+SERVED_GPU_FRACTION = 0.5699
 SAMPLED_VRAM_MB = 7000.0
 PEAK_READ_MB = 4000.0
 
@@ -164,13 +167,24 @@ def test_assert_full_offload_passes_and_fails() -> None:
 
 
 def test_vllm_serve_command_targets_model_and_port() -> None:
-    command = _vllm_serve_command("/ckpt/int4-gptq", port=9000)
+    command = _vllm_serve_command("/ckpt/int4-gptq", port=9000, gpu_fraction=0.5699)
     assert command[:3] == ["vllm", "serve", "/ckpt/int4-gptq"]
     assert _value_after(command, "--port") == "9000"
     assert _value_after(command, "--host") == "127.0.0.1"
     assert "--no-enable-prefix-caching" in command
-    gpu_fraction = _value_after(command, "--gpu-memory-utilization")
-    assert gpu_fraction == str(SERVE_GPU_MEMORY_UTILIZATION)
+    assert _value_after(command, "--gpu-memory-utilization") == "0.5699"
+
+
+@pytest.mark.parametrize("total_mb", [16380.0, 20475.0, 24564.0, 49140.0])
+def test_vllm_memory_fraction_reserves_the_same_budget_on_every_card(total_mb: float) -> None:
+    reserved = vllm_memory_fraction(total_mb) * total_mb
+    assert reserved == pytest.approx(VLLM_MEMORY_BUDGET_MB, rel=1e-3)
+
+
+def test_vllm_memory_fraction_rejects_a_card_too_small_for_the_budget() -> None:
+    too_small = VLLM_MEMORY_BUDGET_MB / MAX_GPU_MEMORY_FRACTION - 1.0
+    with pytest.raises(ValueError, match="above the"):
+        vllm_memory_fraction(too_small)
 
 
 def test_vllm_bench_command_matches_parser_and_rig_operating_point() -> None:
@@ -203,10 +217,10 @@ def test_native_vllm_latency_serves_and_benches_the_eval_artifact(tmp_path: Path
     checkpoint.mkdir()
     (checkpoint / "weights.safetensors").write_bytes(b"x" * 2_000_000)
     process = _FakeProcess()
-    served: list[tuple[str, int]] = []
+    served: list[tuple[str, int, float]] = []
 
-    def factory(model: str, *, port: int, log_path: Path) -> VllmServer:
-        served.append((model, port))
+    def factory(model: str, *, port: int, log_path: Path, gpu_fraction: float) -> VllmServer:
+        served.append((model, port, gpu_fraction))
         return VllmServer(process, log_path)
 
     commands: list[list[str]] = []
@@ -224,11 +238,12 @@ def test_native_vllm_latency_serves_and_benches_the_eval_artifact(tmp_path: Path
         model_dims=lambda _: DIMS,
         machine_probe=machine,
         clock_lock=lambda: False,
+        gpu_fraction=lambda: SERVED_GPU_FRACTION,
     )
     provider = cast(LogitProvider, _VllmProvider(str(checkpoint)))
     out = probe(provider, resolved, device="cuda", mode="full")
 
-    assert served == [(str(checkpoint), 8123)]
+    assert served == [(str(checkpoint), 8123, SERVED_GPU_FRACTION)]
     assert len(out.latency) == len(spec.batch_sizes)
     state = out.latency[0].machine_state
     assert state.gpu_clock_sm_mhz == machine.reading.sm_mhz
@@ -249,7 +264,13 @@ def test_native_vllm_latency_wraps_bench_failure_with_server_log() -> None:
     resolved = _resolved("int4-gptq")
     process = _FakeProcess()
 
-    def factory(model: str, *, port: int, log_path: Path) -> VllmServer:  # noqa: ARG001
+    def factory(
+        model: str,  # noqa: ARG001
+        *,
+        port: int,  # noqa: ARG001
+        log_path: Path,
+        gpu_fraction: float,  # noqa: ARG001
+    ) -> VllmServer:
         log_path.write_text("engine crash: out of device memory\n", encoding="utf-8")
         return VllmServer(process, log_path)
 
@@ -264,6 +285,7 @@ def test_native_vllm_latency_wraps_bench_failure_with_server_log() -> None:
         model_dims=lambda _: DIMS,
         machine_probe=_FakeMachine(),
         clock_lock=lambda: False,
+        gpu_fraction=lambda: SERVED_GPU_FRACTION,
     )
     provider = cast(LogitProvider, _VllmProvider("/ckpt"))
     with pytest.raises(RuntimeError, match="out of device memory"):

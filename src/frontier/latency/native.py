@@ -25,7 +25,10 @@ any Track-B row is banked (docs/decisions.md 2026-07-17).
 Peak VRAM is read while the workload is alive: a point read under the still-running
 server for vLLM, a background ``VramSampler`` around the ``llama-bench`` process for
 GGUF. An ``nvidia-smi`` read taken after the process exits sees an idle GPU and would
-inflate ``tok_s_per_gb`` by dividing throughput by a few idle megabytes.
+inflate ``tok_s_per_gb`` by dividing throughput by a few idle megabytes. What that read
+sees for vLLM is the engine's reservation, so the reservation is sized from an absolute
+budget (``vllm_memory_fraction``) and the number describes the variant rather than the
+card the pod happened to hold.
 
 The two parsers are pure and CPU-tested against captured JSON. The subprocess runners,
 the server start, and the nvidia-smi reads are injectable, so the probes' control flow
@@ -69,11 +72,47 @@ LOG_TAIL_LINES = 40
 # it batch size 1 rather than repeating the same measurement under the eval's batch axis.
 SINGLE_STREAM_BATCH = 1
 LLAMA_BENCH_DECODE_LEN = 128
-# The same fraction the eval engine requests (backends/vllm.py), so the bench's resident
-# pool is the pool the eval ran under; it is also the peak-VRAM definition for vLLM rows
-# (docs/methodology.md): vLLM preallocates, so peak is the pool, and this pins it against
-# an upstream default change.
-SERVE_GPU_MEMORY_UTILIZATION = 0.9
+# vLLM's gpu_memory_utilization is a fraction of the whole card, and the reservation it
+# produces is what a vLLM row records as peak VRAM (docs/methodology.md). A fixed fraction
+# therefore makes peak_vram_mb and tok_s_per_gb properties of the rented card: the same
+# variant would report ~22GB on a 24GB pod and ~14GB on a 16GB one. The budget is absolute
+# instead, so every vLLM row reserves the same amount on whatever card the pod holds, and
+# the number stays inside the project's 16GB target. Megabytes are nvidia-smi's, matching
+# _nvidia_used_mb.
+VLLM_MEMORY_BUDGET_MB = 14_000.0
+# Above this the engine has too little left for the CUDA context and fragmentation, so a
+# card that cannot hold the budget under the ceiling is rejected rather than measured.
+MAX_GPU_MEMORY_FRACTION = 0.9
+# The serve command carries the fraction as text; rounding keeps the server log and the
+# process list readable, and 1e-4 of a card is a few megabytes against a 14GB budget.
+GPU_FRACTION_DECIMALS = 4
+
+
+def vllm_memory_fraction(total_mb: float) -> float:
+    """The ``gpu_memory_utilization`` reserving ``VLLM_MEMORY_BUDGET_MB`` on this card.
+
+    Args:
+        total_mb: the card's total memory, as ``nvidia-smi --query-gpu=memory.total``
+            reports it.
+
+    Returns:
+        The fraction to pass to ``vllm.LLM`` and to ``vllm serve``.
+
+    Raises:
+        ValueError: when the card is too small to hold the budget under
+            ``MAX_GPU_MEMORY_FRACTION``. Clamping instead would hand back a row whose
+            memory number describes the pod rather than the variant.
+    """
+    fraction = VLLM_MEMORY_BUDGET_MB / total_mb
+    if fraction > MAX_GPU_MEMORY_FRACTION:
+        floor_mb = VLLM_MEMORY_BUDGET_MB / MAX_GPU_MEMORY_FRACTION
+        raise ValueError(
+            f"card reports {total_mb:.0f} MB total; the {VLLM_MEMORY_BUDGET_MB:.0f} MB vLLM "
+            f"budget needs gpu_memory_utilization={fraction:.3f}, above the "
+            f"{MAX_GPU_MEMORY_FRACTION} ceiling. Provision a card of at least "
+            f"{floor_mb:.0f} MB."
+        )
+    return round(fraction, GPU_FRACTION_DECIMALS)
 
 
 def parse_vllm_bench(
@@ -255,6 +294,7 @@ class NativeVllmLatency:
         model_dims: Callable[[ResolvedConfig], tuple[int, int, int]] | None = None,
         machine_probe: MachineProbe | None = None,
         clock_lock: Callable[[], bool] | None = None,
+        gpu_fraction: Callable[[], float] | None = None,
     ) -> None:
         self._run_json = run_json or _run_vllm_bench
         self._server_factory = server_factory or _start_vllm_server
@@ -263,6 +303,7 @@ class NativeVllmLatency:
         self._model_dims = model_dims or _model_dims
         self._machine = machine_probe or NvidiaSmiProbe()
         self._clock_lock = clock_lock or probe_clock_lock
+        self._gpu_fraction = gpu_fraction or vllm_gpu_memory_utilization
 
     def __call__(
         self,
@@ -280,9 +321,12 @@ class NativeVllmLatency:
         throughput: dict[int, float] = {}
         vram_by_batch: dict[int, float] = {}
         port = self._pick_port()
+        fraction = self._gpu_fraction()
         with tempfile.TemporaryDirectory(prefix="vllm-bench-") as tmp:
             tmp_path = Path(tmp)
-            server = self._server_factory(model, port=port, log_path=tmp_path / "serve.log")
+            server = self._server_factory(
+                model, port=port, log_path=tmp_path / "serve.log", gpu_fraction=fraction
+            )
             try:
                 for batch_size in spec.batch_sizes:
                     server.assert_alive()
@@ -432,14 +476,14 @@ def _assemble(
     return LatencyMemory(latency=latency, memory=memory, tok_s_per_gb=tok_s_per_gb)
 
 
-def _vllm_serve_command(model: str, *, port: int) -> list[str]:
+def _vllm_serve_command(model: str, *, port: int, gpu_fraction: float) -> list[str]:
     """The ``vllm serve`` invocation the probe owns.
 
     Prefix caching is off so every bench run pays a cold prefill: the three batch sizes
     reuse one server, and the random dataset can repeat prompt prefixes across runs,
-    which would let a cached prefill warm the later TTFT readings. The memory fraction is
-    pinned to the eval engine's value so the resident pool, which is what the vLLM peak
-    VRAM read reports, is the pool the eval ran under.
+    which would let a cached prefill warm the later TTFT readings. ``gpu_fraction`` comes
+    from the same ``vllm_memory_fraction`` call the eval engine makes, so the reservation
+    the VRAM read reports is the one the eval ran under.
     """
     return [
         "vllm",
@@ -451,7 +495,7 @@ def _vllm_serve_command(model: str, *, port: int) -> list[str]:
         str(port),
         "--no-enable-prefix-caching",
         "--gpu-memory-utilization",
-        str(SERVE_GPU_MEMORY_UTILIZATION),
+        str(gpu_fraction),
     ]
 
 
@@ -528,10 +572,14 @@ def _llama_bench_command(gguf_path: Path, resolved: ResolvedConfig, context_len:
     ]
 
 
-def _start_vllm_server(model: str, *, port: int, log_path: Path) -> VllmServer:  # pragma: no cover
+def _start_vllm_server(  # pragma: no cover
+    model: str, *, port: int, log_path: Path, gpu_fraction: float
+) -> VllmServer:
     with log_path.open("w", encoding="utf-8") as handle:
         process = subprocess.Popen(
-            _vllm_serve_command(model, port=port), stdout=handle, stderr=subprocess.STDOUT
+            _vllm_serve_command(model, port=port, gpu_fraction=gpu_fraction),
+            stdout=handle,
+            stderr=subprocess.STDOUT,
         )
     return VllmServer(process, log_path)
 
@@ -567,11 +615,20 @@ def _path_size_mb(path: Path) -> float:
     return total / 1e6
 
 
-def _nvidia_used_mb() -> float:  # pragma: no cover
+def _nvidia_query_mb(field: str) -> float:  # pragma: no cover
     result = subprocess.run(
-        ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+        ["nvidia-smi", f"--query-gpu={field}", "--format=csv,noheader,nounits"],
         check=True,
         capture_output=True,
         text=True,
     )
     return float(result.stdout.strip().splitlines()[0])
+
+
+def _nvidia_used_mb() -> float:  # pragma: no cover
+    return _nvidia_query_mb("memory.used")
+
+
+def vllm_gpu_memory_utilization() -> float:  # pragma: no cover
+    """``gpu_memory_utilization`` for the card this process is running on."""
+    return vllm_memory_fraction(_nvidia_query_mb("memory.total"))

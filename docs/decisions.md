@@ -4,6 +4,23 @@ Newest first. Each entry: the decision, the reasoning, and whether it is settled
 or provisional. Kept current as the project evolves; this is the memory of why
 things are the way they are.
 
+### 2026-07-27 The vLLM reservation is an absolute budget, not a fraction of the card (SETTLED)
+`gpu_memory_utilization=0.9` was hardcoded in the eval engine (`backends/vllm.py`) and in
+the serve command (`latency/native.py`). vLLM preallocates that reservation and methodology
+defines a vLLM row's peak VRAM as the reservation, so both `peak_vram_mb` and
+`tok_s_per_gb` came out as 0.9 of whatever card the pod held: the same variant would have
+read ~22GB on an A5000 and ~14GB on an RTX 2000 Ada, and the memory axis would have ranked
+pods instead of variants across the four vLLM rows. Both call sites now derive the fraction
+per card from `VLLM_MEMORY_BUDGET_MB` (14000MB, which also holds every vLLM row inside the
+project's 16GB target). Settled before the first vLLM row is banked, so no result needs
+re-running.
+
+A card too small to hold the budget under the 0.9 ceiling raises instead of clamping. A
+clamped row would still produce a number, and that number would not mean what the other
+rows' numbers mean, which is the failure the budget exists to prevent. The floor works out
+at ~15.6GB, so a 16GB card passes and the project's stated target is the smallest card that
+runs.
+
 ### 2026-07-26 vLLM needs an r580+ pod, and that is a provisioning rule, not an image change (SETTLED)
 Every published vLLM wheel's compiled extension links `libcudart.so.13`, checked directly
 with `ldd` on both 0.25.1 and 0.21.0. The `[cu13]` markers in 0.25.1's metadata are not

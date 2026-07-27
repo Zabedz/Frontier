@@ -31,6 +31,7 @@ import numpy as np
 
 from frontier.backends.hf import DEFAULT_REVISION, chat_wrap, resolve_candidates
 from frontier.eval.records import FloatArray, IntArray, letters_for
+from frontier.latency.native import vllm_gpu_memory_utilization
 
 # vLLM's TokensPrompt is a TypedDict, so a plain dict with this key is exactly what
 # ``generate`` accepts, and building it here avoids importing vllm on the CPU test path.
@@ -97,12 +98,15 @@ class VllmLogitProvider:
         self._hf_tokenizer = transformers.AutoTokenizer.from_pretrained(
             self._tokenizer_id, revision=self._revision
         )
+        # An absolute budget rather than a fixed fraction: the engine's reservation is what
+        # the latency probe records as this row's peak VRAM, and both must ask for the same
+        # amount on any card the pod happens to hold.
         self._engine = vllm.LLM(
             model=self.model,
             dtype="auto",
             seed=self._seed,
             max_logprobs=-1,
-            gpu_memory_utilization=0.9,
+            gpu_memory_utilization=vllm_gpu_memory_utilization(),
             enforce_eager=False,
         )
         self._sampling_cls = vllm.SamplingParams
