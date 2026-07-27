@@ -98,9 +98,9 @@ class VllmLogitProvider:
         self._hf_tokenizer = transformers.AutoTokenizer.from_pretrained(
             self._tokenizer_id, revision=self._revision
         )
-        # An absolute budget rather than a fixed fraction: the engine's reservation is what
-        # the latency probe records as this row's peak VRAM, and both must ask for the same
-        # amount on any card the pod happens to hold.
+        # Sized to the card, so a larger pod buys a larger KV cache. The latency probe's
+        # serve command calls the same helper: the engine's reservation is what the row
+        # records as peak VRAM, so the eval and the bench must ask for the same amount.
         self._engine = vllm.LLM(
             model=self.model,
             dtype="auto",

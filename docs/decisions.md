@@ -4,22 +4,32 @@ Newest first. Each entry: the decision, the reasoning, and whether it is settled
 or provisional. Kept current as the project evolves; this is the memory of why
 things are the way they are.
 
-### 2026-07-27 The vLLM reservation is an absolute budget, not a fraction of the card (SETTLED)
+### 2026-07-27 The vLLM reservation is the card minus a headroom, and vLLM memory is a within-card number (SETTLED)
 `gpu_memory_utilization=0.9` was hardcoded in the eval engine (`backends/vllm.py`) and in
-the serve command (`latency/native.py`). vLLM preallocates that reservation and methodology
-defines a vLLM row's peak VRAM as the reservation, so both `peak_vram_mb` and
-`tok_s_per_gb` came out as 0.9 of whatever card the pod held: the same variant would have
-read ~22GB on an A5000 and ~14GB on an RTX 2000 Ada, and the memory axis would have ranked
-pods instead of variants across the four vLLM rows. Both call sites now derive the fraction
-per card from `VLLM_MEMORY_BUDGET_MB` (14000MB, which also holds every vLLM row inside the
-project's 16GB target). Settled before the first vLLM row is banked, so no result needs
-re-running.
+the serve command (`latency/native.py`), which also left a 20GB pod serving as though it
+were a 16GB one. `vllm_memory_fraction` now derives the fraction per card as
+`(total - 1800MB) / total`, capped at 0.92 and floored at a 15000MB card, and both call
+sites use it. A 16GB card reserves 14.6GB, a 20GB card 18.7GB, an A5000 22.6GB. The
+headroom is fixed rather than proportional because what it covers (the CUDA context,
+fragmentation, the gap between nvidia-smi's total and torch's reachable memory) does not
+grow with the card; the 0.92 cap keeps a large card from handing the driver a thinner
+margin than a small one gets.
 
-A card too small to hold the budget under the 0.9 ceiling raises instead of clamping. A
-clamped row would still produce a number, and that number would not mean what the other
-rows' numbers mean, which is the failure the budget exists to prevent. The floor works out
-at ~15.6GB, so a 16GB card passes and the project's stated target is the smallest card that
-runs.
+An absolute megabyte budget was considered first and rejected. It made `peak_vram_mb`
+identical across pods, but it also capped a 24GB pod at a 16GB pod's KV cache, and it
+bought less comparability than it appeared to: the reservation is a configured quantity
+either way, so it never separated one vLLM variant from another. What it would have
+protected is a comparison the project does not make.
+
+The consequence is a constraint on the analysis, recorded in `docs/methodology.md`: a vLLM
+row's `peak_vram_mb` and `tok_s_per_gb` are comparable only against vLLM rows on the same
+card, so all four vLLM rows run on one card. The variant's memory signal for vLLM lives in
+`weights_resident_mb`, which comes from the checkpoint and does separate the bit widths.
+Settled before the first vLLM row is banked, so no result needs re-running.
+
+A card below 15000MB raises at load rather than OOMing mid-run. 16GB cards report 15360MB
+(T4) to 16380MB (RTX 2000 Ada), so the project's target card passes and a 12GB card is
+rejected.
 
 ### 2026-07-26 vLLM needs an r580+ pod, and that is a provisioning rule, not an image change (SETTLED)
 Every published vLLM wheel's compiled extension links `libcudart.so.13`, checked directly

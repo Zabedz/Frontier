@@ -26,9 +26,9 @@ Peak VRAM is read while the workload is alive: a point read under the still-runn
 server for vLLM, a background ``VramSampler`` around the ``llama-bench`` process for
 GGUF. An ``nvidia-smi`` read taken after the process exits sees an idle GPU and would
 inflate ``tok_s_per_gb`` by dividing throughput by a few idle megabytes. What that read
-sees for vLLM is the engine's reservation, so the reservation is sized from an absolute
-budget (``vllm_memory_fraction``) and the number describes the variant rather than the
-card the pod happened to hold.
+sees for vLLM is the engine's reservation, which ``vllm_memory_fraction`` sizes to the
+card minus a headroom, so a vLLM row's memory number and ``tok_s_per_gb`` are comparable
+against other vLLM rows measured on the same card.
 
 The two parsers are pure and CPU-tested against captured JSON. The subprocess runners,
 the server start, and the nvidia-smi reads are injectable, so the probes' control flow
@@ -72,24 +72,33 @@ LOG_TAIL_LINES = 40
 # it batch size 1 rather than repeating the same measurement under the eval's batch axis.
 SINGLE_STREAM_BATCH = 1
 LLAMA_BENCH_DECODE_LEN = 128
-# vLLM's gpu_memory_utilization is a fraction of the whole card, and the reservation it
-# produces is what a vLLM row records as peak VRAM (docs/methodology.md). A fixed fraction
-# therefore makes peak_vram_mb and tok_s_per_gb properties of the rented card: the same
-# variant would report ~22GB on a 24GB pod and ~14GB on a 16GB one. The budget is absolute
-# instead, so every vLLM row reserves the same amount on whatever card the pod holds, and
-# the number stays inside the project's 16GB target. Megabytes are nvidia-smi's, matching
-# _nvidia_used_mb.
-VLLM_MEMORY_BUDGET_MB = 14_000.0
-# Above this the engine has too little left for the CUDA context and fragmentation, so a
-# card that cannot hold the budget under the ceiling is rejected rather than measured.
-MAX_GPU_MEMORY_FRACTION = 0.9
+# vLLM sizes its KV cache to fill whatever gpu_memory_utilization allows, so the fraction
+# decides how much of the card a serving run actually uses. The rule is to take the card
+# minus a fixed headroom: a 20GB pod gets a larger KV cache than a 16GB one, which is the
+# reason to rent it. Headroom covers the CUDA context, allocator fragmentation, and the gap
+# between nvidia-smi's total and the memory torch can reach. Megabytes are nvidia-smi's,
+# matching _nvidia_used_mb.
+GPU_HEADROOM_MB = 1_800.0
+# The engine never asks for more than this share of a card, whatever the headroom rule
+# would allow. It binds above ~22GB, where a proportional headroom would be wasteful and a
+# bare subtraction would leave the driver a thinner margin than it has on a small card.
+MAX_GPU_MEMORY_FRACTION = 0.92
+# Below this the 3B model's weights, its activations, and a KV cache worth benchmarking do
+# not fit together. 16GB cards report ~15.4-16.4GB, so the project's target card passes and
+# a 12GB card is rejected at load rather than during a run.
+MIN_CARD_MB = 15_000.0
 # The serve command carries the fraction as text; rounding keeps the server log and the
-# process list readable, and 1e-4 of a card is a few megabytes against a 14GB budget.
+# process list readable, and 1e-4 of a card is a few megabytes.
 GPU_FRACTION_DECIMALS = 4
 
 
 def vllm_memory_fraction(total_mb: float) -> float:
-    """The ``gpu_memory_utilization`` reserving ``VLLM_MEMORY_BUDGET_MB`` on this card.
+    """The ``gpu_memory_utilization`` that uses this card down to ``GPU_HEADROOM_MB``.
+
+    The reservation scales with the card, so a larger pod buys a larger KV cache and more
+    throughput. It is also what a vLLM row records as peak VRAM, which makes that column
+    and ``tok_s_per_gb`` comparable only among vLLM rows measured on the same card
+    (docs/methodology.md).
 
     Args:
         total_mb: the card's total memory, as ``nvidia-smi --query-gpu=memory.total``
@@ -99,20 +108,15 @@ def vllm_memory_fraction(total_mb: float) -> float:
         The fraction to pass to ``vllm.LLM`` and to ``vllm serve``.
 
     Raises:
-        ValueError: when the card is too small to hold the budget under
-            ``MAX_GPU_MEMORY_FRACTION``. Clamping instead would hand back a row whose
-            memory number describes the pod rather than the variant.
+        ValueError: when the card is smaller than ``MIN_CARD_MB``.
     """
-    fraction = VLLM_MEMORY_BUDGET_MB / total_mb
-    if fraction > MAX_GPU_MEMORY_FRACTION:
-        floor_mb = VLLM_MEMORY_BUDGET_MB / MAX_GPU_MEMORY_FRACTION
+    if total_mb < MIN_CARD_MB:
         raise ValueError(
-            f"card reports {total_mb:.0f} MB total; the {VLLM_MEMORY_BUDGET_MB:.0f} MB vLLM "
-            f"budget needs gpu_memory_utilization={fraction:.3f}, above the "
-            f"{MAX_GPU_MEMORY_FRACTION} ceiling. Provision a card of at least "
-            f"{floor_mb:.0f} MB."
+            f"card reports {total_mb:.0f} MB total, below the {MIN_CARD_MB:.0f} MB floor a "
+            "vLLM run needs for weights, activations, and a KV cache; provision a 16GB card"
         )
-    return round(fraction, GPU_FRACTION_DECIMALS)
+    fraction = (total_mb - GPU_HEADROOM_MB) / total_mb
+    return round(min(fraction, MAX_GPU_MEMORY_FRACTION), GPU_FRACTION_DECIMALS)
 
 
 def parse_vllm_bench(

@@ -53,12 +53,16 @@ count (it is biased and bin-sensitive, and can invert the conclusion).
   `tok_s_per_gb`'s denominator is the serving reservation and variants separate on the
   throughput numerator; for llama.cpp it is the max of a 0.5s-interval sample of
   `nvidia-smi` while `llama-bench` runs.
-- The vLLM reservation is a fixed number of megabytes, not a fixed fraction of the card.
-  `gpu_memory_utilization` is a fraction, so the eval engine and the serve command both
-  derive it per card from `VLLM_MEMORY_BUDGET_MB` (`latency/native.py`). A fixed 0.9
-  would have made every vLLM row's memory and `tok_s_per_gb` a property of the rented
-  card. A card too small to hold the budget under a 0.9 ceiling raises rather than
-  clamps, since a clamped row is not comparable to the others.
+- The vLLM reservation is the card minus a fixed headroom, capped at 0.92 and floored at
+  a 15GB card (`vllm_memory_fraction`, `latency/native.py`). The eval engine and the
+  serve command call the same helper, so the reservation the row records is the one the
+  eval ran under. A larger pod therefore buys a larger KV cache and more throughput.
+- The consequence: a vLLM row's `peak_vram_mb` and `tok_s_per_gb` are only comparable
+  against other vLLM rows measured on the same card, and `peak_vram_mb` does not separate
+  vLLM variants from each other at all, because the engine takes whatever it is given.
+  For vLLM the variant's memory signal is `weights_resident_mb` and `weights_disk_mb`,
+  which come from the checkpoint and do separate int4 from int8 from fp16. Run every
+  vLLM row on one card and report `tok_s_per_gb` within that card.
 
 ## 5. Quiet machine, honestly
 

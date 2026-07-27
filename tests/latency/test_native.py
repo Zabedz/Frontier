@@ -13,9 +13,10 @@ from frontier.eval.provider import LogitProvider
 from frontier.latency.machine import ClockReading
 from frontier.latency.native import (
     ABSENT_MACHINE_STATE,
+    GPU_HEADROOM_MB,
     MAX_GPU_MEMORY_FRACTION,
+    MIN_CARD_MB,
     SINGLE_STREAM_BATCH,
-    VLLM_MEMORY_BUDGET_MB,
     NativeLlamaCppLatency,
     NativeVllmLatency,
     VllmServer,
@@ -51,7 +52,9 @@ BATCH = 4
 MODEL_LAYERS = 36
 DIMS = (MODEL_LAYERS, 8, 128)
 SERVED_VRAM_MB = 9000.0
-SERVED_GPU_FRACTION = 0.5699
+SERVED_GPU_FRACTION = 0.8901
+# T4, RTX 2000 Ada, RTX 4000 Ada, A5000, as nvidia-smi reports them.
+CARD_SIZES_MB = (15_360.0, 16_380.0, 20_475.0, 24_564.0)
 SAMPLED_VRAM_MB = 7000.0
 PEAK_READ_MB = 4000.0
 
@@ -175,16 +178,25 @@ def test_vllm_serve_command_targets_model_and_port() -> None:
     assert _value_after(command, "--gpu-memory-utilization") == "0.5699"
 
 
-@pytest.mark.parametrize("total_mb", [16380.0, 20475.0, 24564.0, 49140.0])
-def test_vllm_memory_fraction_reserves_the_same_budget_on_every_card(total_mb: float) -> None:
-    reserved = vllm_memory_fraction(total_mb) * total_mb
-    assert reserved == pytest.approx(VLLM_MEMORY_BUDGET_MB, rel=1e-3)
+@pytest.mark.parametrize("total_mb", CARD_SIZES_MB)
+def test_vllm_memory_fraction_leaves_headroom_on_every_card(total_mb: float) -> None:
+    free_mb = total_mb - vllm_memory_fraction(total_mb) * total_mb
+    assert free_mb >= GPU_HEADROOM_MB - 1.0
 
 
-def test_vllm_memory_fraction_rejects_a_card_too_small_for_the_budget() -> None:
-    too_small = VLLM_MEMORY_BUDGET_MB / MAX_GPU_MEMORY_FRACTION - 1.0
-    with pytest.raises(ValueError, match="above the"):
-        vllm_memory_fraction(too_small)
+def test_vllm_memory_fraction_grows_the_reservation_with_the_card() -> None:
+    reserved = [vllm_memory_fraction(total) * total for total in CARD_SIZES_MB]
+    assert reserved == sorted(reserved)
+    assert reserved[0] < reserved[-1]
+
+
+def test_vllm_memory_fraction_caps_a_large_card_at_the_ceiling() -> None:
+    assert vllm_memory_fraction(49_140.0) == MAX_GPU_MEMORY_FRACTION
+
+
+def test_vllm_memory_fraction_rejects_a_card_below_the_floor() -> None:
+    with pytest.raises(ValueError, match="below the"):
+        vllm_memory_fraction(MIN_CARD_MB - 1.0)
 
 
 def test_vllm_bench_command_matches_parser_and_rig_operating_point() -> None:
