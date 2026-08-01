@@ -5,8 +5,7 @@
 #
 # This arm needs autoregressive generation, so it is GPU-only (not CPU-smoke
 # friendly) and costs more per item. It is therefore run on a SUBSET of items and
-# on a REPRESENTATIVE subset of variants only, not the full grid. See the reasoning
-# subset in docs/decisions.md:
+# on a REPRESENTATIVE subset of variants only. The subset:
 #   fp16, int4-gptq, int4-nf4, ptq-3bit-torchao, qat-3bit-lora, distill-softlabel-topk
 eval:
   task_name: gpqa            # GPQA-Diamond, or MMLU-Pro-with-CoT as the alternate

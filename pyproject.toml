@@ -51,11 +51,11 @@ hf = [
 ]
 
 # The Track-B serving/quantise stack (vllm, llmcompressor, compressed-tensors,
-# gptqmodel, torchao, llama-cpp-python) is intentionally NOT a locked group: it pins
-# against the real CUDA build and its transformers (< 5, capped by llmcompressor)
-# conflicts with the hf group's 5.x, so it is installed separately on the pod. The
-# backends and producers import it lazily behind Any-typed seams, so the CPU checks
-# pass without it. See docs/pod-setup.md for the versions and install order.
+# gptqmodel, torchao, llama-cpp-python) installs separately on the pod: it pins against
+# the real CUDA build and its transformers (capped at 5.10.1 by llmcompressor) conflicts
+# with the hf group's 5.x. The backends and producers import it lazily behind Any-typed
+# seams, so the CPU checks pass without it. See docker/README.md for the versions and
+# install order.
 
 dev = [
     "ruff>=0.6",

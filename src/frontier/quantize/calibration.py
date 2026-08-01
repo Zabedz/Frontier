@@ -1,10 +1,10 @@
 """The calibration-set builder for the compressed-tensors producers.
 
 GPTQ, AWQ, and SmoothQuant all pick scales from a small calibration corpus, and that
-corpus is an explicit axis of the study, not a buried default (``docs/methodology.md``
-section 7). The corpus is a parameter here: WP5 wires only the in-domain MMLU set, and
-WP6 adds an out-of-domain ``CorpusSpec`` at matched sample count and seqlen, holding the
-sampling seed, which is the only difference that axis is allowed to have.
+corpus is an explicit axis of the study. The corpus is a parameter here: WP5 wires only
+the in-domain MMLU set, and WP6 adds an out-of-domain ``CorpusSpec`` at matched sample
+count and seqlen, holding the sampling seed, which is the only difference that axis is
+allowed to have.
 
 The dataset loader is injectable, so the render-and-tokenize logic is unit-tested on a
 tiny in-memory ``datasets.Dataset`` with a fake tokenizer, no download.

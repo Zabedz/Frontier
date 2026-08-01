@@ -247,8 +247,8 @@ def load_mmlu_redux(
 
     The repo has no ``all`` config, so the subject configs are iterated and their
     ``test`` splits concatenated. ``clean_subset`` (the default) keeps only ``ok``
-    items and never touches ``correct_answer``; ``relabel`` additionally re-labels
-    ``wrong_groundtruth`` items (see the loader docstrings and the decision note).
+    items and never touches ``correct_answer``; ``relabel`` also re-labels
+    ``wrong_groundtruth`` items (see the loader docstrings).
     """
     load = loader or _load_split
     resolve_names = config_names or _config_names

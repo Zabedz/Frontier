@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared helpers for the pod harness. Sources the (git-ignored) connection details
+# Shared helpers for the pod scripts. Sources the (git-ignored) connection details
 # and defines ssh/rsync wrappers. The local repo is the source of truth: results and
 # checkpoints are mirrored down continuously and pushed back up to resume on a new pod.
 set -uo pipefail

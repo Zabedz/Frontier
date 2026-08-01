@@ -20,7 +20,7 @@ keys are written against the vllm 0.25.1 source (``vllm/benchmarks/serve.py``: t
 ``--percentile-metrics ttft,tpot --metric-percentiles 95`` run emits exactly the keys
 ``parse_vllm_bench`` reads, and the bench waits up to 600s for the endpoint, absorbing
 the server's model-load window). The flow is validated once, watched, on the pod before
-any Track-B row is banked (docs/decisions.md 2026-07-17).
+any Track-B row is banked.
 
 Peak VRAM is read while the workload is alive: a point read under the still-running
 server for vLLM, a background ``VramSampler`` around the ``llama-bench`` process for
@@ -98,7 +98,7 @@ def vllm_memory_fraction(total_mb: float) -> float:
     The reservation scales with the card, so a larger pod buys a larger KV cache and more
     throughput. It is also what a vLLM row records as peak VRAM, which makes that column
     and ``tok_s_per_gb`` comparable only among vLLM rows measured on the same card
-    (docs/methodology.md).
+    (docs/results_schema.md).
 
     Args:
         total_mb: the card's total memory, as ``nvidia-smi --query-gpu=memory.total``

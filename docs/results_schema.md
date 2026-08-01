@@ -1,14 +1,12 @@
 # Result-row schema
 
 Every variant run appends exactly one row to the result store (`results/`, parquet
-plus a jsonl mirror). Analysis and plotting read this store; nothing recomputes
-from raw model outputs. The typed contract lives in `src/frontier/schema.py`
-(`ResultRow` and its nested records); this document is the human reference.
+plus a jsonl mirror). Analysis and plotting read this store; nothing recomputes from
+raw model outputs. The typed contract is `ResultRow` and its nested records in
+`src/frontier/schema.py`.
 
-A row cannot be constructed without its provenance and its backend. That is a
-structural rule, not a lint: `Backend` and `Provenance` are required, non-default
-fields, so a run that forgets to record which kernel produced a number does not
-compile.
+`Backend` and `Provenance` are required, non-default fields, so a row cannot be
+constructed without recording which kernel produced the number.
 
 ## Provenance (required)
 
@@ -62,6 +60,17 @@ throughput_tok_s, n_trials, warmup_discarded. TTFT and ITL are always separate.
 ## Memory (per batch size / context length)
 
 peak_vram_mb, weights_disk_mb, weights_resident_mb, kv_cache_mb, context_len.
+
+`peak_vram_mb` is read while the workload is alive, at the reference context length
+only; the analytic `kv_cache_mb` column carries the context scaling. Its meaning
+depends on the backend. HF reads the CUDA allocator, llama.cpp takes the max of a
+0.5s-interval `nvidia-smi` sample around `llama-bench`, and vLLM reports the engine's
+preallocated reservation. That reservation is sized to the card
+(`vllm_memory_fraction`, `latency/native.py`), so a vLLM row's `peak_vram_mb` and
+`tok_s_per_gb` are comparable only against vLLM rows on the same card, and every vLLM
+row runs on one card. `peak_vram_mb` does not separate vLLM variants from each other,
+since the engine takes whatever it is given; for vLLM the variant's memory signal is
+`weights_resident_mb` and `weights_disk_mb`.
 
 ## Machine state (captured per measurement)
 

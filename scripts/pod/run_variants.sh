@@ -5,8 +5,8 @@
 #   vllm|llama_cpp  -> venv-B, `frontier-quantize run` (write checkpoint) then `frontier run`
 # Track-B latency is off by default and enabled with TRACKB_LATENCY=1. Rows are
 # append-only and resume-skip keyed, so a row banked without latency stays without it:
-# run the serve-and-bench flow's one watched validation run first (docs/decisions.md
-# 2026-07-17), then batch with TRACKB_LATENCY=1 so every banked row carries its latency.
+# run the serve-and-bench flow's one watched validation run first, then batch with
+# TRACKB_LATENCY=1 so every banked row carries its latency.
 set -uo pipefail
 cd /workspace/frontier
 CKPT=/workspace/checkpoints

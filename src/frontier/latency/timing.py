@@ -7,10 +7,9 @@ structure is identical between them, which is what makes the rig CPU-testable: t
 only thing that changes on the GPU is the clock.
 
 The decode loop keeps every tensor on device (no ``.item()``, ``.cpu()``, or
-``.tolist()`` between steps). That is the load-bearing rule from ``docs/methodology.md``
-section 4: a single host sync mid-loop would serialise the queue and inflate the fast
-decode steps. The one synchronize lives in ``CudaEventClock.resolve``, never in the
-loop, and the torch module is injected so that bookkeeping is unit-tested on CPU.
+``.tolist()`` between steps): a single host sync mid-loop would serialise the queue and
+inflate the fast decode steps. The one synchronize lives in ``CudaEventClock.resolve``,
+outside the loop, and the torch module is injected so bookkeeping is unit-tested on CPU.
 """
 
 from __future__ import annotations

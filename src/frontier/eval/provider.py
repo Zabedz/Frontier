@@ -80,8 +80,8 @@ def letter_probs(logits: FloatArray, candidate_ids: IntArray) -> FloatArray:
     """Softmax over only the candidate-letter logits.
 
     Gathers ``logits[candidate_ids]`` and softmaxes them, giving a per-option
-    distribution over exactly the answer letters. This is the single-token signal
-    from ``docs/decisions.md``: no full-option-string scoring, so no
-    length-normalisation confound.
+    distribution over exactly the answer letters. The study scores this single-token
+    signal, which avoids the length-normalisation confound a full-option-string score
+    carries.
     """
     return softmax(logits[candidate_ids])
