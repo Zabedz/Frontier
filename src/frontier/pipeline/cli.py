@@ -12,14 +12,18 @@ from typing import TYPE_CHECKING, Annotated
 
 import typer
 from rich.console import Console
+from rich.table import Table
 
 from frontier.io.store import ResultStore
+from frontier.metrics.bootstrap import DEFAULT_RESAMPLES
+from frontier.metrics.calibration import DEFAULT_BINS
 from frontier.pipeline.runner import run as run_pipeline
 from frontier.schema import ResultRow, RunMode
 
 if TYPE_CHECKING:
     from frontier.analysis.frontier_chart import ColorBy
     from frontier.analysis.load import XCost
+    from frontier.analysis.significance import PairSignificance, Skipped
 
 # The analysis stack pulls matplotlib and pandas; it is imported inside `plot` so that
 # `frontier run` does not pay that startup cost. Under `from __future__ import
@@ -160,6 +164,69 @@ def plot(
     _summarise_plots(written, plots_dir)
 
 
+@app.command()
+def significance(
+    results: Annotated[Path, typer.Option("--results", help="Result store root.")] = Path(
+        "results"
+    ),
+    task: Annotated[
+        str | None, typer.Option("--task", help="Restrict to one task_name (default: all).")
+    ] = None,
+    references: Annotated[
+        Path | None,
+        typer.Option(
+            "--references",
+            exists=True,
+            dir_okay=False,
+            help="Backend-to-reference map (default: configs/analysis/significance.yaml).",
+        ),
+    ] = None,
+    bins: Annotated[
+        int, typer.Option("--bins", help="Bin count for the headline ECE delta.")
+    ] = DEFAULT_BINS,
+    resamples: Annotated[
+        int, typer.Option("--resamples", help="Bootstrap resamples per statistic.")
+    ] = DEFAULT_RESAMPLES,
+    confidence_level: Annotated[
+        float, typer.Option("--confidence-level", help="Interval mass, e.g. 0.95.")
+    ] = 0.95,
+    seed: Annotated[int, typer.Option("--seed", help="Resampling seed.")] = 0,
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Parquet output (default: <results>/significance.parquet)."),
+    ] = None,
+) -> None:
+    """Pair each variant against its backend's reference and bootstrap the deltas.
+
+    Reports the absolute accuracy and ECE deltas, the relative damage gap that says
+    whether calibration degrades faster than accuracy, and the damage ratio that says by
+    what multiple.
+    """
+    from frontier.analysis import (  # noqa: PLC0415
+        load_references,
+        load_tidy,
+        significance_table,
+        to_frame,
+    )
+
+    store = ResultStore(results)
+    tidy = load_tidy(store, task_name=task)
+    reference_map = load_references() if references is None else load_references(references)
+    found, skipped = significance_table(
+        tidy,
+        root=results,
+        references=reference_map,
+        n_bins=bins,
+        confidence_level=confidence_level,
+        n_resamples=resamples,
+        rng=seed,
+    )
+    destination = out if out is not None else results / "significance.parquet"
+    if found:
+        to_frame(found).to_parquet(destination)
+    _summarise_significance(found, skipped, destination if found else None)
+
+
 def _parse_mode(value: str) -> RunMode:
     if value == "smoke":
         return "smoke"
@@ -214,6 +281,65 @@ def _summarise(rows: list[ResultRow], results: Path) -> None:
             f"ece_equal_width={row.quality.ece_equal_width:.4f}"
         )
     _console.print(f"store: {results / 'results.parquet'}")
+
+
+def _interval(point: float, low: float, high: float, *, places: int = 4) -> str:
+    return f"{point:+.{places}f} [{low:+.{places}f}, {high:+.{places}f}]"
+
+
+def _summarise_significance(
+    found: list[PairSignificance], skipped: list[Skipped], destination: Path | None
+) -> None:
+    for skip in skipped:
+        _console.print(f"[yellow]skipped {skip.variant} on {skip.task}: {skip.reason}[/yellow]")
+    if not found:
+        _console.print("[yellow]no pairs to test[/yellow]")
+        return
+    table = Table(title="Paired significance (variant against its backend reference)")
+    for column in ("pair", "n", "d accuracy", "d ECE", "damage gap", "damage ratio"):
+        table.add_column(column, overflow="fold")
+    for item in found:
+        ratio = item.damage_ratio
+        ratio_cell = (
+            _interval(ratio.point, ratio.low, ratio.high, places=2)
+            if ratio.usable
+            else f"{ratio.point:+.2f} (not estimable)"
+        )
+        table.add_row(
+            item.pair.label,
+            str(item.n_items),
+            _interval(item.delta_accuracy.point, item.delta_accuracy.low, item.delta_accuracy.high),
+            _interval(item.delta_ece.point, item.delta_ece.low, item.delta_ece.high),
+            _interval(item.damage_gap.point, item.damage_gap.low, item.damage_gap.high, places=3),
+            ratio_cell,
+        )
+    _console.print(table)
+    for item in found:
+        verdict = (
+            "calibration degrades faster than accuracy"
+            if item.damage_gap.excludes_zero and item.damage_gap.point > 0.0
+            else "no separation between the two damages"
+        )
+        _console.print(f"  {item.pair.label}: {verdict}")
+        if not item.delta_ece_sign_stable:
+            _console.print(
+                "    [yellow]the ECE delta changes sign across the bin sweep, so no single "
+                "bin count supports a claim[/yellow]"
+            )
+        elif not item.delta_ece_sweep_all_exclude_zero:
+            _console.print(
+                "    [yellow]the ECE delta holds its sign across the sweep but its interval "
+                "touches zero at one or more bin counts[/yellow]"
+            )
+        if not item.damage_ratio.usable:
+            denominator = item.damage_ratio.denominator
+            _console.print(
+                f"    ratio not estimable: accuracy damage "
+                f"{_interval(denominator.point, denominator.low, denominator.high, places=4)}, "
+                f"{item.damage_ratio.nonfinite_resamples} undefined resamples"
+            )
+    if destination is not None:
+        _console.print(f"wrote {destination}")
 
 
 def _summarise_plots(written: list[Path], plots_dir: Path) -> None:

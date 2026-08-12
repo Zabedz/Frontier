@@ -1,0 +1,19 @@
+# The reference each variant's damage is measured against, keyed by inference backend.
+#
+# Bit width only means something paired with an implementation (docs/methodology.md
+# section 1), and a Track-B ECE is not comparable to a Track-A one until the fidelity
+# gate passes (docs/architecture.md), so llama.cpp and vLLM each carry their own
+# reference instead of borrowing the HF fp16 row. Every other variant on a backend
+# pairs against that backend's reference, so adding a variant needs no edit here.
+#
+# llama.cpp has no fp16 row, so q8_0 stands in as the highest-precision GGUF build.
+# That makes the GGUF numbers a within-GGUF ladder rather than a loss against full
+# precision, which is what the cross-runtime replication claim rests on.
+#
+# torchao is absent: registry.py raises NotImplementedError, so no torchao row exists
+# to reference. Variants on a backend with no entry are reported as skipped.
+
+references:
+  hf: fp16
+  llama_cpp: gguf-q8_0
+  vllm: fp16-vllm

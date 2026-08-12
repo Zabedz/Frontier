@@ -5,17 +5,23 @@ Small ``n_resamples`` and fixed seeds keep these fast and deterministic.
 
 from __future__ import annotations
 
+import math
+import warnings
+
 import numpy as np
 import numpy.typing as npt
 import pytest
 from conftest import make_calibrated_confidence, make_calibrated_softmax, make_gold, make_softmax
-from scipy.stats import bootstrap  # type: ignore[import-untyped]
+from scipy.stats import DegenerateDataWarning, bootstrap  # type: ignore[import-untyped]
 
 from frontier.metrics.bootstrap import (
     accuracy_ci,
     ece_ci,
+    paired_damage_gap_ci,
+    paired_damage_ratio_ci,
     paired_delta_accuracy_ci,
     paired_delta_ece_ci,
+    relative_damages,
 )
 from frontier.metrics.calibration import ece_from_confidence, top_label
 
@@ -110,3 +116,132 @@ def test_paired_delta_ece_ci_between_independent_calibrated_draws_contains_zero(
         confidence_a, correct_a, confidence_b, correct_b, n_bins=10, n_resamples=RESAMPLES, rng=5
     )
     assert interval.low <= 0.0 <= interval.high
+
+
+def test_relative_damages_signs_positive_when_the_second_variant_is_worse() -> None:
+    confidence_a, correct_a = make_calibrated_confidence(2000, np.random.default_rng(20))
+    confidence_b = np.clip(confidence_a + 0.15, 0.0, 1.0)
+    correct_b = correct_a.copy()
+    correct_b[:100] = False
+    calibration_damage, accuracy_damage = relative_damages(
+        confidence_a, correct_a, confidence_b, correct_b, n_bins=10
+    )
+    assert calibration_damage > 0.0
+    assert accuracy_damage > 0.0
+
+
+def test_relative_damages_are_nan_when_a_reference_is_zero() -> None:
+    perfect = np.array([1.0, 1.0, 1.0, 1.0])
+    hit = np.array([True, True, True, True])
+    _calibration_damage, accuracy_damage = relative_damages(
+        perfect, np.zeros(4, dtype=np.bool_), perfect, hit, n_bins=2
+    )
+    assert math.isnan(accuracy_damage)
+
+
+def test_damage_gap_ci_is_zero_on_identical_variants() -> None:
+    confidence, correct = make_calibrated_confidence(1500, np.random.default_rng(21))
+    interval = paired_damage_gap_ci(
+        confidence,
+        correct,
+        confidence.copy(),
+        correct.copy(),
+        n_bins=10,
+        n_resamples=RESAMPLES,
+        rng=7,
+    )
+    assert interval.point == 0.0
+    assert interval.low == 0.0
+    assert interval.high == 0.0
+    assert not interval.excludes_zero
+
+
+def test_damage_gap_point_matches_the_hand_computed_difference() -> None:
+    confidence_a, correct_a = make_calibrated_confidence(2000, np.random.default_rng(22))
+    confidence_b = np.clip(confidence_a + 0.1, 0.0, 1.0)
+    correct_b = correct_a.copy()
+    correct_b[:80] = False
+    calibration_damage, accuracy_damage = relative_damages(
+        confidence_a, correct_a, confidence_b, correct_b, n_bins=10
+    )
+    interval = paired_damage_gap_ci(
+        confidence_a, correct_a, confidence_b, correct_b, n_bins=10, n_resamples=RESAMPLES, rng=7
+    )
+    assert interval.point == pytest.approx(calibration_damage - accuracy_damage)
+
+
+def test_damage_gap_ci_excludes_zero_when_only_calibration_moves() -> None:
+    confidence_a, correct_a = make_calibrated_confidence(3000, np.random.default_rng(23))
+    confidence_b = np.clip(confidence_a + 0.2, 0.0, 1.0)
+    interval = paired_damage_gap_ci(
+        confidence_a,
+        correct_a,
+        confidence_b,
+        correct_a.copy(),
+        n_bins=10,
+        n_resamples=RESAMPLES,
+        rng=7,
+    )
+    assert interval.point > 0.0
+    assert interval.excludes_zero
+
+
+def test_damage_ratio_point_matches_the_hand_computed_quotient() -> None:
+    confidence_a, correct_a = make_calibrated_confidence(2000, np.random.default_rng(24))
+    confidence_b = np.clip(confidence_a + 0.1, 0.0, 1.0)
+    correct_b = correct_a.copy()
+    correct_b[:120] = False
+    calibration_damage, accuracy_damage = relative_damages(
+        confidence_a, correct_a, confidence_b, correct_b, n_bins=10
+    )
+    ratio = paired_damage_ratio_ci(
+        confidence_a, correct_a, confidence_b, correct_b, n_bins=10, n_resamples=RESAMPLES, rng=7
+    )
+    assert ratio.point == pytest.approx(calibration_damage / accuracy_damage)
+    assert ratio.n_resamples == RESAMPLES
+
+
+def test_damage_ratio_is_unusable_when_the_accuracy_damage_is_zero() -> None:
+    confidence_a, correct_a = make_calibrated_confidence(2000, np.random.default_rng(25))
+    confidence_b = np.clip(confidence_a + 0.2, 0.0, 1.0)
+    ratio = paired_damage_ratio_ci(
+        confidence_a,
+        correct_a,
+        confidence_b,
+        correct_a.copy(),
+        n_bins=10,
+        n_resamples=RESAMPLES,
+        rng=7,
+    )
+    assert math.isnan(ratio.point)
+    assert math.isnan(ratio.low) and math.isnan(ratio.high)
+    assert ratio.nonfinite_resamples == RESAMPLES
+    assert not ratio.usable
+
+
+def test_damage_ratio_is_unusable_when_the_denominator_interval_spans_zero() -> None:
+    confidence_a, correct_a = make_calibrated_confidence(2000, np.random.default_rng(26))
+    confidence_b = np.clip(confidence_a + 0.2, 0.0, 1.0)
+    correct_b = correct_a.copy()
+    correct_b[:3] = ~correct_b[:3]
+    ratio = paired_damage_ratio_ci(
+        confidence_a, correct_a, confidence_b, correct_b, n_bins=10, n_resamples=RESAMPLES, rng=7
+    )
+    assert not ratio.denominator.excludes_zero
+    assert not ratio.usable
+
+
+def test_damage_ratio_emits_no_degenerate_data_warning() -> None:
+    confidence_a, correct_a = make_calibrated_confidence(500, np.random.default_rng(27))
+    confidence_b = np.clip(confidence_a + 0.2, 0.0, 1.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DegenerateDataWarning)
+        paired_damage_ratio_ci(
+            confidence_a,
+            correct_a,
+            confidence_b,
+            correct_a.copy(),
+            n_bins=10,
+            n_resamples=RESAMPLES,
+            rng=7,
+        )

@@ -60,6 +60,7 @@ TIDY_COLUMNS: tuple[str, ...] = (
     "variant_name",
     "family",
     "track",
+    "backend",
     "task_name",
     "config_hash",
     "seed",
@@ -133,6 +134,7 @@ def load_tidy(
                 "variant_name": record["variant_name"],
                 "family": record["family"],
                 "track": record["backend.track"],
+                "backend": record["backend.inference_backend"],
                 "task_name": record["task.task_name"],
                 "config_hash": record["provenance.config_hash"],
                 "seed": int(record["provenance.seed"]),
@@ -169,7 +171,7 @@ def collapse_seeds(tidy: pd.DataFrame) -> pd.DataFrame:
         return empty
     grouped = tidy.groupby(["variant_name", "task_name"], sort=False)
     means = grouped[list(_NUMERIC_COLUMNS)].mean()
-    carried = grouped[["family", "track", "config_hash"]].first()
+    carried = grouped[["family", "track", "backend", "config_hash"]].first()
     n_seeds = grouped.size().rename("n_seeds")
     collapsed = pd.concat([carried, means, n_seeds], axis=1).reset_index()
     return collapsed
