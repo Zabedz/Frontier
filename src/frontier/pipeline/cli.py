@@ -21,9 +21,11 @@ from frontier.pipeline.runner import run as run_pipeline
 from frontier.schema import ResultRow, RunMode
 
 if TYPE_CHECKING:
+    from frontier.analysis._skipped import Skipped
     from frontier.analysis.frontier_chart import ColorBy
     from frontier.analysis.load import XCost
-    from frontier.analysis.significance import PairSignificance, Skipped
+    from frontier.analysis.repairability import Repairability
+    from frontier.analysis.significance import PairSignificance
 
 # The analysis stack pulls matplotlib and pandas, so `plot` imports it in the body to keep
 # `frontier run` startup cheap.
@@ -228,6 +230,42 @@ def significance(
     _summarise_significance(found, skipped, destination if found else None)
 
 
+@app.command()
+def recalibrate(
+    results: Annotated[Path, typer.Option("--results", help="Result store root.")] = Path(
+        "results"
+    ),
+    task: Annotated[
+        str | None, typer.Option("--task", help="Restrict to one task_name (default: all).")
+    ] = None,
+    bins: Annotated[int, typer.Option("--bins", help="Bin count for the reported ECE.")] = (
+        DEFAULT_BINS
+    ),
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Parquet output (default: <results>/recalibration.parquet)."),
+    ] = None,
+) -> None:
+    """Fit one temperature per variant and report what calibration error survives it.
+
+    The fit uses the held-out split's fit half, the numbers come from its report half.
+    """
+    from frontier.analysis import load_tidy, repairability_table  # noqa: PLC0415
+    from frontier.analysis.repairability import to_frame  # noqa: PLC0415
+
+    store = ResultStore(results)
+    found, skipped = repairability_table(
+        load_tidy(store, task_name=task), root=results, n_bins=bins
+    )
+    destination = out if out is not None else results / "recalibration.parquet"
+    if found:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        staging = destination.with_suffix(destination.suffix + ".tmp")
+        to_frame(found).to_parquet(staging)
+        staging.replace(destination)
+    _summarise_recalibration(found, skipped, destination if found else None)
+
+
 def _parse_mode(value: str) -> RunMode:
     if value == "smoke":
         return "smoke"
@@ -339,6 +377,31 @@ def _summarise_significance(
                 f"{_interval(denominator.point, denominator.low, denominator.high, places=4)}, "
                 f"{item.damage_ratio.nonfinite_resamples} undefined resamples"
             )
+    if destination is not None:
+        _console.print(f"wrote {destination}")
+
+
+def _summarise_recalibration(
+    found: list[Repairability], skipped: list[Skipped], destination: Path | None
+) -> None:
+    for skip in skipped:
+        _console.print(f"[yellow]skipped {skip.variant} on {skip.task}: {skip.reason}[/yellow]")
+    if not found:
+        _console.print("[yellow]no variant carries stored distributions[/yellow]")
+        return
+    table = Table(title="Repairability under one fitted temperature (held-out)")
+    for column in ("variant", "T", "n fit/report", "ECE before", "ECE after", "removed"):
+        table.add_column(column, overflow="fold")
+    for item in found:
+        table.add_row(
+            item.variant,
+            f"{item.temperature:.3f}",
+            f"{item.n_fit}/{item.n_report}",
+            f"{item.ece_before:.4f}",
+            f"{item.ece_after:.4f}",
+            f"{item.ece_removed_fraction:+.1%}",
+        )
+    _console.print(table)
     if destination is not None:
         _console.print(f"wrote {destination}")
 

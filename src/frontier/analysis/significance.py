@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from frontier.analysis._skipped import Skipped
 from frontier.analysis.load import load_predictions_for_variant
 from frontier.io.predictions import PredictionRows
 from frontier.metrics.bootstrap import (
@@ -45,15 +46,6 @@ class VariantPair:
     @property
     def label(self) -> str:
         return f"{self.variant} vs {self.reference}"
-
-
-@dataclass(frozen=True, slots=True)
-class Skipped:
-    """A variant that produced no pair."""
-
-    variant: str
-    task: str
-    reason: str
 
 
 @dataclass(frozen=True, slots=True)

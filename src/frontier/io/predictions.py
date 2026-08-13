@@ -29,9 +29,11 @@ CorrectArray = npt.NDArray[np.bool_]
 LabelArray = npt.NDArray[np.intp]
 IntArray = npt.NDArray[np.intp]  # (n_items,), true option count per item
 ProbMatrix = npt.NDArray[np.float64]  # (n_items, max_options), zero-padded
+QidArray = npt.NDArray[np.str_]  # (n_items,), dataset item ids
 
 PREDICTIONS_SUBDIR = "predictions"
 PROBS_COLUMN = "probs"
+QID_COLUMN = "qid"
 SIMPLEX_ATOL = 1e-6
 
 PREDICTIONS_SCHEMA: pa.Schema = pa.schema(
@@ -41,8 +43,17 @@ PREDICTIONS_SCHEMA: pa.Schema = pa.schema(
         ("gold", pa.int64()),
         ("predicted", pa.int64()),
         (PROBS_COLUMN, pa.list_(pa.float64())),
+        (QID_COLUMN, pa.string()),
     ]
 )
+
+
+class CorruptSidecarError(ValueError):
+    """A sidecar whose contents contradict themselves. Always a defect, never an absence."""
+
+
+class MissingSidecarError(ValueError):
+    """No sidecar for a stored row. Expected for a store predating the sidecar."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,9 +73,13 @@ class OptionProbs:
 class PredictionRows:
     """Per-item calibration signal for one scored row (one seed).
 
-    All four arrays have length ``n_items``. ``options`` is ``None`` for a sidecar written
-    before the distribution was stored, and carries no default so a producer stating it is
-    a deliberate act.
+    Every array has length ``n_items``. ``options`` and ``qid`` are ``None`` for a sidecar
+    written before those columns existed, and neither carries a default, so a producer
+    stating them is a deliberate act.
+
+    ``qid`` is the dataset's own item id. It cannot be recovered later without re-running,
+    and the subject-level label-noise, raw-vs-redux, and answer-channel-agreement analyses
+    all need to know which items they are looking at.
     """
 
     confidence: FloatArray
@@ -72,6 +87,7 @@ class PredictionRows:
     gold: LabelArray
     predicted: LabelArray
     options: OptionProbs | None
+    qid: QidArray | None
 
 
 def predictions_key(config_hash: str, seed: int, task_name: str) -> str:
@@ -106,8 +122,10 @@ def write_predictions_rows(rows: PredictionRows, *, root: Path, key: str) -> Pat
         "gold": np.asarray(rows.gold, dtype=np.int64),
         "predicted": np.asarray(rows.predicted, dtype=np.int64),
     }
+    n_items = rows.confidence.shape[0]
+    columns[QID_COLUMN] = [None] * n_items if rows.qid is None else rows.qid.tolist()
     if rows.options is None:
-        columns[PROBS_COLUMN] = [None] * rows.confidence.shape[0]
+        columns[PROBS_COLUMN] = [None] * n_items
     else:
         _check_options(rows)
         counts = rows.options.n_options
@@ -146,6 +164,7 @@ def read_predictions_path(path: Path) -> PredictionRows:
             table.column("predicted").to_numpy(zero_copy_only=False), dtype=np.intp
         ),
         options=_read_options(table),
+        qid=_read_qid(table),
     )
 
 
@@ -158,6 +177,22 @@ def pad_option_probs(rows: list[FloatArray]) -> OptionProbs:
     return OptionProbs(probs=probs, n_options=counts)
 
 
+def _read_qid(table: pa.Table) -> QidArray | None:
+    if QID_COLUMN not in table.column_names:
+        return None
+    stored = table.column(QID_COLUMN).to_pylist()
+    missing = [index for index, item in enumerate(stored) if item is None]
+    if len(missing) == len(stored):
+        return None
+    if missing:
+        raise CorruptSidecarError(
+            f"sidecar stores qids for some items but not {len(missing)} others (first at "
+            f"index {missing[0]}); the writer is all-or-nothing, so this file is corrupt"
+        )
+    ids: QidArray = np.asarray(stored, dtype=np.str_)
+    return ids
+
+
 def _read_options(table: pa.Table) -> OptionProbs | None:
     if PROBS_COLUMN not in table.column_names:
         return None
@@ -166,7 +201,7 @@ def _read_options(table: pa.Table) -> OptionProbs | None:
     if len(missing) == len(stored):
         return None
     if missing:
-        raise ValueError(
+        raise CorruptSidecarError(
             f"sidecar stores distributions for some items but not {len(missing)} others "
             f"(first at index {missing[0]}); the writer is all-or-nothing, so this file is "
             f"corrupt"
@@ -184,6 +219,8 @@ def _check_lengths(rows: PredictionRows) -> None:
     if rows.options is not None:
         lengths["probs"] = rows.options.probs.shape[0]
         lengths["n_options"] = rows.options.n_options.shape[0]
+    if rows.qid is not None:
+        lengths["qid"] = rows.qid.shape[0]
     if len(set(lengths.values())) != 1:
         raise ValueError(f"prediction arrays disagree in length: {lengths}")
 

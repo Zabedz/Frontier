@@ -14,6 +14,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
+import numpy as np
+
 from frontier.backends.hf import resolve_device
 from frontier.backends.registry import build_latency_probe, build_provider
 from frontier.eval.extract import exact_match, score_items, to_robustness, to_task_spec
@@ -189,6 +191,7 @@ def run(
                     gold=out.gold,
                     predicted=out.predicted,
                     options=OptionProbs(probs=out.probs, n_options=out.n_options),
+                    qid=np.asarray([record.qid for record in records], dtype=np.str_),
                 ),
                 root=results_root,
                 key=predictions_key(resolved.config_hash, seed, resolved.eval_spec.task_name),

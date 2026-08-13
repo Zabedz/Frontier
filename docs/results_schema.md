@@ -33,7 +33,7 @@ number.
 |---|---|---|
 | Variant | variant_name, family (baseline/ptq/qat/distill), method, bit_width, group_size, calibration_corpus (none/in_domain/ood), calibration_samples | |
 | Task | task_name, split, num_items, prompt_style (zeroshot/fiveshot), scoring (letter_softmax/acc_norm), permutation_scheme (none/cyclic), labels (raw/redux), cot (bool) | |
-| Quality | accuracy (+ ci_low, ci_high), ece_equal_width, ece_equal_mass_ace, ece_bin_sweep (map of bin_count -> ece), brier, brier_reliability, brier_resolution, brier_uncertainty, nll, perplexity, temperature_scaled (bool), temperature | calibration numbers carry bootstrap CIs; deltas across variants are bootstrapped paired on the same resamples |
+| Quality | accuracy (+ ci_low, ci_high), ece_equal_width, ece_equal_mass_ace, ece_bin_sweep (map of bin_count -> ece), brier, brier_reliability, brier_resolution, brier_uncertainty, nll, perplexity, temperature_scaled (bool), temperature | calibration numbers carry bootstrap CIs; deltas across variants are bootstrapped paired on the same resamples. `temperature` and `temperature_scaled` are unset by construction (1.0 / false on every row): the fitted temperature lives in `results/recalibration.parquet`, per methodology section 8 |
 | Latency, per batch size | batch_size, ttft_median_ms, ttft_p95_ms, itl_median_ms, itl_p95_ms, throughput_tok_s, n_trials, warmup_discarded | TTFT and ITL are always separate |
 | Memory, per batch size / context length | peak_vram_mb, weights_disk_mb, weights_resident_mb, kv_cache_mb, context_len | `peak_vram_mb` is backend-dependent, below |
 | Machine state, per measurement | gpu_clock_sm_mhz, gpu_clock_mem_mhz, gpu_temp_c, power_w, clocks_locked (bool), clock_drift_flag (bool) | if clocks could not be locked (the expected RunPod case), `clocks_locked` is false and the observed clock range is what defends the number |
@@ -53,3 +53,26 @@ Read while the workload is alive, at the reference context length only; the anal
 So a vLLM row's `peak_vram_mb` and `tok_s_per_gb` compare only against vLLM rows on the
 same card, and every vLLM row runs on one card. The column does not separate vLLM
 variants; their memory signal is `weights_resident_mb` and `weights_disk_mb`.
+
+## The predictions sidecar
+
+One parquet per appended row at `results/predictions/<task>__<config_hash>__seed<n>.parquet`,
+holding the per-item signal the row's scalars cannot carry.
+
+| column | type | note |
+| --- | --- | --- |
+| `confidence` | double | top-label probability, `== probs.max(axis=1)` |
+| `correct` | bool | `predicted == gold` |
+| `gold` | int64 | gold option index |
+| `predicted` | int64 | argmax option index |
+| `probs` | list\<double\> | the answer-letter distribution, stored at the item's true option count |
+| `qid` | string | dataset item id; the recalibration split is keyed on it |
+
+- `probs` is ragged, so the file holds no padding; the reader re-pads to the widest item
+  and recovers each count from its list length.
+- `probs` and `qid` are null throughout for a sidecar written before those columns existed,
+  and read back as `None`. A column filled for only some items is a corrupt file and raises.
+- The writer refuses a distribution that is non-finite, off the simplex, or at odds with the
+  `predicted` and `confidence` stored beside it.
+- The sidecar is written before its row is appended, so a failed write leaves no row for the
+  resume-skip to pass over.

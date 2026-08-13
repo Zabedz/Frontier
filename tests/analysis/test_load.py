@@ -47,7 +47,9 @@ def _preds(n: int = 40) -> PredictionRows:
     correct = rng.uniform(0.0, 1.0, size=n) < confidence
     gold = rng.integers(0, 4, size=n).astype(np.intp)
     predicted = np.where(correct, gold, (gold + 1) % 4).astype(np.intp)
-    return PredictionRows(confidence, correct.astype(np.bool_), gold, predicted, options=None)
+    return PredictionRows(
+        confidence, correct.astype(np.bool_), gold, predicted, options=None, qid=None
+    )
 
 
 def _variant(
@@ -174,6 +176,7 @@ def test_pooling_sidecars_of_different_width_keeps_every_row_on_its_own_options(
             gold=predicted,
             predicted=predicted,
             options=options,
+            qid=None,
         )
 
     merged = _concat_predictions([piece((3, 3), 1), piece((5, 4), 2)])
@@ -193,6 +196,7 @@ def test_pooling_drops_to_none_when_one_seed_has_no_distributions() -> None:
         gold=np.zeros(1, dtype=np.intp),
         predicted=np.zeros(1, dtype=np.intp),
         options=pad_option_probs([np.asarray([1.0])]),
+        qid=None,
     )
     without = PredictionRows(
         confidence=np.asarray([1.0]),
@@ -200,5 +204,6 @@ def test_pooling_drops_to_none_when_one_seed_has_no_distributions() -> None:
         gold=np.zeros(1, dtype=np.intp),
         predicted=np.zeros(1, dtype=np.intp),
         options=None,
+        qid=None,
     )
     assert _concat_predictions([with_probs, without]).options is None

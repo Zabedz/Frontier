@@ -198,3 +198,32 @@ def test_junk_beyond_the_option_count_is_masked_out() -> None:
     scaled = apply_temperature(probs, 2.0, counts)
     assert scaled[1, 3] == 0.0
     assert np.allclose(scaled.sum(axis=1), 1.0, atol=1e-12)
+
+
+def test_the_fit_agrees_with_netcal_temperature_scaling() -> None:
+    """Oracle check, the rule every other metric in this package follows.
+
+    netcal parameterises the scale as a multiplier on the logits and stores the reciprocal
+    of the temperature in this module's divisor convention. The transform comparison is the
+    one that does not depend on whose convention is whose: netcal's own output at its
+    fitted scale must equal ``apply_temperature`` at ours.
+    """
+    netcal_scaling = pytest.importorskip("netcal.scaling")
+    rng = np.random.default_rng(31)
+    logits = rng.normal(0.0, 2.0, size=(4000, N_CLASSES))
+    probs = _softmax(logits)
+    gold = np.asarray([rng.choice(N_CLASSES, p=row) for row in probs], dtype=np.intp)
+    overconfident = _softmax(logits / 0.45)
+    counts = _full(4000, N_CLASSES)
+
+    ours = fit_temperature(overconfident, gold, counts)
+    oracle = netcal_scaling.TemperatureScaling()
+    oracle.fit(overconfident.astype(np.float64), gold.astype(np.int64))
+    theirs = float(np.ravel(oracle.temperature)[0])
+
+    assert ours == pytest.approx(1.0 / theirs, rel=1e-3)
+    assert np.allclose(
+        oracle.transform(overconfident.astype(np.float64)),
+        apply_temperature(overconfident, ours, counts),
+        atol=1e-4,
+    )

@@ -15,10 +15,13 @@ from typing import Any, Literal
 import numpy as np
 import pandas as pd
 
+from frontier.analysis.holdout import split as split_rows
 from frontier.io.predictions import (
+    MissingSidecarError,
     OptionProbs,
     PredictionRows,
     ProbMatrix,
+    QidArray,
     predictions_key,
     predictions_path,
     read_predictions_path,
@@ -184,6 +187,28 @@ def load_predictions_for_variant(
     Raises ``ValueError`` for a missing variant/task, a group spanning several config
     hashes, or a missing sidecar.
     """
+    return _concat_predictions(_sidecars_for_variant(tidy, variant_name, task_name, root))
+
+
+def load_split_predictions(
+    tidy: pd.DataFrame, *, variant_name: str, task_name: str, root: Path
+) -> tuple[PredictionRows, PredictionRows]:
+    """One variant's sidecars pooled into ``(fit, report)`` halves.
+
+    The split is keyed on each item's id, so an item lands on the same side whichever seed
+    or subset it arrived in, and pooling order stops mattering. See ``holdout``.
+    """
+    pieces = _sidecars_for_variant(tidy, variant_name, task_name, root)
+    halves = [split_rows(piece) for piece in pieces]
+    return (
+        _concat_predictions([fit for fit, _report in halves]),
+        _concat_predictions([report for _fit, report in halves]),
+    )
+
+
+def _sidecars_for_variant(
+    tidy: pd.DataFrame, variant_name: str, task_name: str, root: Path
+) -> list[PredictionRows]:
     subset = tidy[(tidy["variant_name"] == variant_name) & (tidy["task_name"] == task_name)]
     if subset.empty:
         raise ValueError(
@@ -197,11 +222,11 @@ def load_predictions_for_variant(
         )
     pieces = _collect_sidecars(subset, task_name, root)
     if not pieces:
-        raise ValueError(
+        raise MissingSidecarError(
             f"no predictions sidecar found under {root} for variant {variant_name!r} "
             f"on task {task_name!r}"
         )
-    return _concat_predictions(pieces)
+    return pieces
 
 
 def load_all_predictions(tidy: pd.DataFrame, *, root: Path) -> dict[str, PredictionRows]:
@@ -262,7 +287,19 @@ def _concat_predictions(pieces: list[PredictionRows]) -> PredictionRows:
         gold=np.concatenate([piece.gold for piece in pieces]),
         predicted=np.concatenate([piece.predicted for piece in pieces]),
         options=_concat_options(pieces),
+        qid=_concat_qid(pieces),
     )
+
+
+def _concat_qid(pieces: list[PredictionRows]) -> QidArray | None:
+    """One seed missing its ids drops the pool, on the same reasoning as the options."""
+    seen: list[QidArray] = []
+    for piece in pieces:
+        if piece.qid is None:
+            return None
+        seen.append(piece.qid)
+    pooled: QidArray = np.concatenate(seen)
+    return pooled
 
 
 def _concat_options(pieces: list[PredictionRows]) -> OptionProbs | None:

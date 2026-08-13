@@ -23,6 +23,11 @@ from frontier.metrics._array import (
     check_predictions,
 )
 
+
+class TemperatureFitError(ValueError):
+    """A sample whose temperature cannot be fitted. Distinct from a malformed input."""
+
+
 TEMPERATURE_BOUNDS = (0.05, 20.0)
 
 # Wider than the optimiser's own xatol (1e-5), so a run that stopped at a bound is not
@@ -105,12 +110,12 @@ def fit_temperature(
     result = minimize_scalar(objective, bounds=bounds, method="bounded")
     best = float(result.x)
     if not bool(result.success) or not math.isfinite(float(result.fun)):
-        raise ValueError(
+        raise TemperatureFitError(
             f"temperature fit did not converge: {result.message}, T={best}, nll={result.fun}"
         )
     low, high = bounds
     if best - low < BOUND_ATOL or high - best < BOUND_ATOL:
-        raise ValueError(
+        raise TemperatureFitError(
             f"temperature fit ran to the bound {bounds}: T={best}. The sample's optimum "
             f"lies outside the scalable range."
         )

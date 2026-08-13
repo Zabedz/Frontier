@@ -35,6 +35,7 @@ def _rows(option_counts: tuple[int, ...] = (4, 4, 3), *, seed: int = 0) -> Predi
         gold=gold,
         predicted=predicted,
         options=options,
+        qid=np.asarray([f"q{i}" for i in range(len(draws))], dtype=np.str_),
     )
 
 

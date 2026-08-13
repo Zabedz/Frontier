@@ -55,7 +55,9 @@ def _predictions(gold: LabelArray, *, seed: int, miscalibration: float = 0.0) ->
     confidence = np.clip(rng.uniform(0.3, 0.98, size=gold.shape[0]) + miscalibration, 0.0, 1.0)
     correct = rng.uniform(0.0, 1.0, size=gold.shape[0]) < HIT_RATE
     predicted = np.where(correct, gold, (gold + 1) % 4).astype(np.intp)
-    return PredictionRows(confidence, correct.astype(np.bool_), gold, predicted, options=None)
+    return PredictionRows(
+        confidence, correct.astype(np.bool_), gold, predicted, options=None, qid=None
+    )
 
 
 def _row(
@@ -311,7 +313,12 @@ def _worse_than(rows: PredictionRows, *, bump: float = 0.25, flips: int = 8) -> 
     correct = rows.correct.copy()
     correct[np.flatnonzero(rows.correct)[:flips]] = False
     return PredictionRows(
-        np.clip(rows.confidence + bump, 0.0, 1.0), correct, rows.gold, rows.predicted, options=None
+        np.clip(rows.confidence + bump, 0.0, 1.0),
+        correct,
+        rows.gold,
+        rows.predicted,
+        options=None,
+        qid=None,
     )
 
 
