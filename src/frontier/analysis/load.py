@@ -183,13 +183,26 @@ def load_predictions_for_variant(
     """Pool every matching seed's sidecar for one variant into one ``PredictionRows``.
 
     More items give stabler bins; concatenation is order-independent for ECE and
-    reliability, so the seeds need no weighting. Raises ``ValueError`` if the tidy frame
-    has no such variant/task or if no sidecar file is found for it.
+    reliability, so the seeds need no weighting. The pool is one variant scored one way,
+    which is what a single ``config_hash`` means: the hash covers the merged config, so a
+    smoke row, a re-run after a config edit, or a second eval profile lands under its own
+    hash and is refused here. Pooling those would raise the item count while the paired
+    guards downstream stayed satisfied, since a doubled group still matches item for item
+    against another doubled group.
+
+    Raises ``ValueError`` if the tidy frame has no such variant/task, if the group spans
+    more than one config hash, or if no sidecar file is found for it.
     """
     subset = tidy[(tidy["variant_name"] == variant_name) & (tidy["task_name"] == task_name)]
     if subset.empty:
         raise ValueError(
             f"no rows in the tidy frame for variant {variant_name!r} on task {task_name!r}"
+        )
+    hashes = sorted({str(value) for value in subset["config_hash"]})
+    if len(hashes) > 1:
+        raise ValueError(
+            f"variant {variant_name!r} on task {task_name!r} spans {len(hashes)} config "
+            f"hashes ({', '.join(hashes)}); pooling them would mix runs scored differently"
         )
     pieces = _collect_sidecars(subset, task_name, root)
     if not pieces:

@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from frontier.analysis.load import load_tidy
+from frontier.analysis.load import load_predictions_for_variant, load_tidy
 from frontier.analysis.significance import (
     DEFAULT_REFERENCES_PATH,
     VariantPair,
@@ -302,3 +302,152 @@ def test_load_references_rejects_a_non_string_reference(tmp_path: Path) -> None:
     path.write_text("references:\n  hf: 17\n", encoding="utf-8")
     with pytest.raises(ValueError, match="must be a variant name"):
         load_references(path)
+
+
+def _worse_than(rows: PredictionRows, *, bump: float = 0.25, flips: int = 8) -> PredictionRows:
+    """The same items, made much more overconfident and slightly less accurate.
+
+    The defaults put calibration damage (+0.44) well clear of accuracy damage (+0.03),
+    which is the regime the gap and ratio are meant to detect. A large confidence bump is
+    needed because the base fixture draws confidence uniformly and independently of
+    correctness, so its ECE already sits near 0.17 and a small bump barely moves it.
+    """
+    correct = rows.correct.copy()
+    correct[np.flatnonzero(rows.correct)[:flips]] = False
+    return PredictionRows(
+        np.clip(rows.confidence + bump, 0.0, 1.0), correct, rows.gold, rows.predicted
+    )
+
+
+def test_pair_significance_points_from_the_reference_to_the_variant() -> None:
+    gold = _gold()
+    reference = _predictions(gold, seed=1)
+    outcome = pair_significance(
+        _pair(),
+        reference,
+        _worse_than(reference),
+        n_bins=10,
+        sweep_bins=(10,),
+        n_resamples=RESAMPLES,
+    )
+    assert outcome.delta_accuracy.point < 0.0
+    assert outcome.delta_ece.point > 0.0
+    assert outcome.damage_gap.point > 0.0
+    assert outcome.damage_ratio.point > 1.0
+
+
+def test_pair_significance_flips_every_sign_when_the_arguments_are_swapped() -> None:
+    gold = _gold()
+    reference = _predictions(gold, seed=1)
+    worse = _worse_than(reference)
+    mirrored = pair_significance(
+        _pair(), worse, reference, n_bins=10, sweep_bins=(10,), n_resamples=RESAMPLES
+    )
+    assert mirrored.delta_accuracy.point > 0.0
+    assert mirrored.delta_ece.point < 0.0
+    assert mirrored.damage_gap.point < 0.0
+
+
+def test_delta_ece_sweep_all_exclude_zero_tracks_the_weakest_bin_count() -> None:
+    gold = _gold()
+    reference = _predictions(gold, seed=1)
+    separated = pair_significance(
+        _pair(),
+        reference,
+        _worse_than(reference),
+        n_bins=10,
+        sweep_bins=(5, 10, 20),
+        n_resamples=RESAMPLES,
+    )
+    assert separated.delta_ece_sweep_all_exclude_zero
+    assert separated.delta_ece_sign_stable
+    identical = pair_significance(
+        _pair(),
+        reference,
+        reference,
+        n_bins=10,
+        sweep_bins=(5, 10, 20),
+        n_resamples=RESAMPLES,
+    )
+    assert not identical.delta_ece_sweep_all_exclude_zero
+
+
+def test_significance_table_refuses_a_variant_spanning_two_config_hashes(tmp_path: Path) -> None:
+    """A re-run under an edited config appends a second row; pooling both would double n
+    while leaving the seed-set and gold-vector guards satisfied."""
+    store, root = _store_with(
+        tmp_path,
+        [
+            _row(name="fp16", backend="hf", track="A", config_hash="a" * 64),
+            _row(name="int4-nf4", backend="hf", track="A", config_hash="b" * 64),
+            _row(name="int4-nf4", backend="hf", track="A", config_hash="f" * 64),
+        ],
+    )
+    found, skipped = significance_table(
+        load_tidy(store), root=root, references=REFERENCES, n_resamples=RESAMPLES
+    )
+    assert found == []
+    assert any("spans 2 config hashes" in skip.reason for skip in skipped)
+
+
+def test_load_predictions_for_variant_refuses_two_config_hashes(tmp_path: Path) -> None:
+    store, root = _store_with(
+        tmp_path,
+        [
+            _row(name="int4-nf4", backend="hf", track="A", config_hash="b" * 64),
+            _row(name="int4-nf4", backend="hf", track="A", config_hash="f" * 64),
+        ],
+    )
+    with pytest.raises(ValueError, match="spans 2 config hashes"):
+        load_predictions_for_variant(
+            load_tidy(store), variant_name="int4-nf4", task_name="mmlu", root=root
+        )
+
+
+def test_to_frame_column_contract_is_stable() -> None:
+    gold = _gold()
+    reference = _predictions(gold, seed=1)
+    outcome = pair_significance(
+        _pair(),
+        reference,
+        _worse_than(reference),
+        n_bins=10,
+        sweep_bins=(5, 10),
+        n_resamples=RESAMPLES,
+    )
+    frame = to_frame([outcome])
+    assert set(frame.columns) == {
+        "variant",
+        "reference",
+        "task",
+        "backend",
+        "track",
+        "n_items",
+        "n_bins",
+        "delta_accuracy",
+        "delta_accuracy_low",
+        "delta_accuracy_high",
+        "delta_ece",
+        "delta_ece_low",
+        "delta_ece_high",
+        "damage_gap",
+        "damage_gap_low",
+        "damage_gap_high",
+        "damage_ratio",
+        "damage_ratio_low",
+        "damage_ratio_high",
+        "damage_ratio_usable",
+        "damage_ratio_nonfinite_resamples",
+        "accuracy_damage",
+        "accuracy_damage_low",
+        "accuracy_damage_high",
+        "delta_ece_sign_stable",
+        "delta_ece_sweep",
+    }
+    low, point, high = json.loads(str(frame["delta_ece_sweep"].iloc[0]))["10"]
+    assert (low, point, high) == (
+        outcome.delta_ece_sweep[10].low,
+        outcome.delta_ece_sweep[10].point,
+        outcome.delta_ece_sweep[10].high,
+    )
+    assert low <= point <= high

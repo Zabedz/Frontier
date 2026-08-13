@@ -245,3 +245,72 @@ def test_damage_ratio_emits_no_degenerate_data_warning() -> None:
             n_resamples=RESAMPLES,
             rng=7,
         )
+
+
+def test_relative_damages_match_a_closed_form_fixture() -> None:
+    """Both denominators are the reference's own value, pinned without recomputation.
+
+    One occupied bin makes ECE exactly ``|accuracy - confidence|``: the reference sits at
+    |0.80 - 0.90| = 0.10 and the variant at |0.76 - 0.91| = 0.15.
+    """
+    reference_confidence = np.full(100, 0.90)
+    reference_correct = np.array([True] * 80 + [False] * 20)
+    variant_confidence = np.full(100, 0.91)
+    variant_correct = np.array([True] * 76 + [False] * 24)
+    calibration_damage, accuracy_damage = relative_damages(
+        reference_confidence,
+        reference_correct,
+        variant_confidence,
+        variant_correct,
+        n_bins=10,
+    )
+    assert calibration_damage == pytest.approx(0.50)  # (0.15 - 0.10) / 0.10
+    assert accuracy_damage == pytest.approx(0.05)  # (0.80 - 0.76) / 0.80
+
+
+def test_damage_gap_and_ratio_match_the_closed_form_fixture() -> None:
+    reference_confidence = np.full(100, 0.90)
+    reference_correct = np.array([True] * 80 + [False] * 20)
+    variant_confidence = np.full(100, 0.91)
+    variant_correct = np.array([True] * 76 + [False] * 24)
+    arrays = (reference_confidence, reference_correct, variant_confidence, variant_correct)
+    gap = paired_damage_gap_ci(*arrays, n_bins=10, n_resamples=RESAMPLES, rng=7)
+    ratio = paired_damage_ratio_ci(*arrays, n_bins=10, n_resamples=RESAMPLES, rng=7)
+    assert gap.point == pytest.approx(0.45)  # 0.50 - 0.05
+    assert ratio.point == pytest.approx(10.0)  # 0.50 / 0.05
+
+
+def test_damage_ratio_is_usable_when_the_damages_are_both_clearly_signed() -> None:
+    confidence_a, correct_a = make_calibrated_confidence(2000, np.random.default_rng(24))
+    confidence_b = np.clip(confidence_a + 0.1, 0.0, 1.0)
+    correct_b = correct_a.copy()
+    correct_b[:120] = False
+    ratio = paired_damage_ratio_ci(
+        confidence_a, correct_a, confidence_b, correct_b, n_bins=10, n_resamples=RESAMPLES, rng=7
+    )
+    assert ratio.usable
+    assert ratio.nonfinite_resamples == 0
+    assert ratio.denominator.excludes_zero
+    assert math.isfinite(ratio.low) and math.isfinite(ratio.high)
+
+
+def test_damage_ratio_denominator_clause_alone_makes_it_unusable() -> None:
+    """A ratio with no undefined resample is still withheld on an unsigned denominator.
+
+    The variant is made clearly worse-calibrated while its accuracy is moved by twenty
+    items in four thousand, so every resample is defined and the accuracy damage still
+    straddles zero.
+    """
+    confidence_a, correct_a = make_calibrated_confidence(4000, np.random.default_rng(31))
+    confidence_b = np.clip(confidence_a + 0.2, 0.0, 1.0)
+    correct_b = correct_a.copy()
+    hits = np.flatnonzero(correct_a)
+    misses = np.flatnonzero(~correct_a)
+    correct_b[hits[:500]] = False
+    correct_b[misses[:480]] = True
+    ratio = paired_damage_ratio_ci(
+        confidence_a, correct_a, confidence_b, correct_b, n_bins=10, n_resamples=199, rng=7
+    )
+    assert ratio.nonfinite_resamples == 0
+    assert not ratio.denominator.excludes_zero
+    assert not ratio.usable

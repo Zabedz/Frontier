@@ -223,7 +223,12 @@ def significance(
     )
     destination = out if out is not None else results / "significance.parquet"
     if found:
-        to_frame(found).to_parquet(destination)
+        # Same write discipline as the result store: the previous table survives a crash
+        # part way through the write.
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        staging = destination.with_suffix(destination.suffix + ".tmp")
+        to_frame(found).to_parquet(staging)
+        staging.replace(destination)
     _summarise_significance(found, skipped, destination if found else None)
 
 

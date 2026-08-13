@@ -49,8 +49,8 @@ class RatioInterval:
     stop describing anything. ``denominator`` carries the denominator's own interval so
     the caller can see whether it is safely signed, and ``nonfinite_resamples`` counts
     the resamples where the ratio was undefined outright. ``low`` and ``high`` are
-    ``nan`` whenever a resample came back non-finite, rather than a number computed by
-    dropping the inconvenient resamples.
+    ``nan`` whenever a resample came back non-finite. Nothing is recomputed from the
+    finite resamples alone.
     """
 
     point: float
@@ -234,8 +234,8 @@ def _paired_percentile_ci(
 ) -> tuple[float, float, FloatArray]:
     """One paired percentile bootstrap: the interval plus the resample distribution.
 
-    The distribution comes back so that a statistic which can be undefined on a given
-    resample (a ratio) is counted rather than quietly quantiled over.
+    The distribution comes back so a caller whose statistic can be undefined on a given
+    resample (a ratio) can count those draws.
     """
     result = bootstrap(
         arrays,
@@ -266,9 +266,9 @@ def relative_damages(
 
     Both are signed so that positive means ``b`` is the worse model: calibration damage
     is the fractional rise in ECE, accuracy damage the fractional fall in accuracy.
-    Putting the two on one scale is what makes "calibration degrades faster than
-    accuracy" a single comparison. Either is ``nan`` when its reference value is zero,
-    which marks the resample undefined instead of dividing by zero.
+    On one scale the two are directly comparable, which is what "calibration degrades
+    faster than accuracy" asks for. Either is ``nan`` when its reference value is zero,
+    which marks the resample undefined.
     """
     ece_a = ece_from_confidence(
         confidence_a, correct_a, n_bins=n_bins, scheme=scheme, weighting=weighting
@@ -300,8 +300,8 @@ def paired_damage_gap_ci(
 
     An interval wholly above zero is the direction claim: compression costs more
     calibration than accuracy, measured in relative terms. The gap is a difference of
-    two fractions rather than their quotient, so it stays well behaved when the accuracy
-    damage is near zero, which is where the ratio stops being estimable.
+    two fractions, so it stays well behaved where the accuracy damage is near zero and
+    the ratio stops being estimable.
 
     Both damages are recomputed inside every resample, reference values included, so
     the statistic is the plug-in estimate of the gap on that resample.

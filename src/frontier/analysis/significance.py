@@ -262,9 +262,9 @@ def significance_table(
 ) -> tuple[list[PairSignificance], list[Skipped]]:
     """Resolve the pairs from the frame and run every statistic on each.
 
-    A pair whose sidecars are missing is skipped with that reason; a pair whose sidecars
-    disagree about the items raises, because that is a corrupted store rather than an
-    absent one.
+    A missing sidecar, or a variant pooling rows scored under more than one config hash,
+    is skipped with that reason. A pair whose sidecars disagree about the items raises,
+    because that is a corrupted store.
     """
     pairs, skipped = resolve_pairs(tidy, references)
     results: list[PairSignificance] = []
