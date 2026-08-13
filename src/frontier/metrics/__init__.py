@@ -32,6 +32,12 @@ from frontier.metrics.calibration import (
     reliability_from_confidence,
     top_label,
 )
+from frontier.metrics.recalibration import (
+    TEMPERATURE_BOUNDS,
+    apply_temperature,
+    fit_temperature,
+    temperature_nll,
+)
 from frontier.metrics.report import CalibrationReport, calibration_report, to_quality
 from frontier.metrics.scoring import BrierDecomposition, brier_decomposition, brier_score, nll
 
@@ -39,6 +45,7 @@ __all__ = [
     "DEFAULT_BINS",
     "DEFAULT_RESAMPLES",
     "DEFAULT_SWEEP",
+    "TEMPERATURE_BOUNDS",
     "BinScheme",
     "BrierDecomposition",
     "CalibrationReport",
@@ -47,6 +54,7 @@ __all__ = [
     "ReliabilityCurve",
     "Weighting",
     "accuracy_ci",
+    "apply_temperature",
     "brier_decomposition",
     "brier_score",
     "calibration_report",
@@ -58,6 +66,7 @@ __all__ = [
     "ece_equal_width",
     "ece_from_confidence",
     "ece_sweep",
+    "fit_temperature",
     "nll",
     "paired_damage_gap_ci",
     "paired_damage_ratio_ci",
@@ -66,6 +75,7 @@ __all__ = [
     "relative_damages",
     "reliability_curve",
     "reliability_from_confidence",
+    "temperature_nll",
     "to_quality",
     "top_label",
 ]
