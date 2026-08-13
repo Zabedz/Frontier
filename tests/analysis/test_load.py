@@ -14,12 +14,18 @@ import numpy as np
 import pytest
 
 from frontier.analysis.load import (
+    _concat_predictions,
     collapse_seeds,
     load_all_predictions,
     load_tidy,
     prediction_labels,
 )
-from frontier.io.predictions import PredictionRows, predictions_key, write_predictions_rows
+from frontier.io.predictions import (
+    PredictionRows,
+    pad_option_probs,
+    predictions_key,
+    write_predictions_rows,
+)
 from frontier.io.store import ResultStore, append_row
 from frontier.schema import ResultRow
 
@@ -41,7 +47,7 @@ def _preds(n: int = 40) -> PredictionRows:
     correct = rng.uniform(0.0, 1.0, size=n) < confidence
     gold = rng.integers(0, 4, size=n).astype(np.intp)
     predicted = np.where(correct, gold, (gold + 1) % 4).astype(np.intp)
-    return PredictionRows(confidence, correct.astype(np.bool_), gold, predicted)
+    return PredictionRows(confidence, correct.astype(np.bool_), gold, predicted, options=None)
 
 
 def _variant(
@@ -147,3 +153,52 @@ def test_load_all_predictions_keeps_two_tasks_of_one_variant(tmp_path: Path) -> 
     assert len(pooled) == len(TWO_TASK_LABELS)
     assert set(pooled) == TWO_TASK_LABELS
     assert set(prediction_labels(tidy)) == TWO_TASK_LABELS
+
+
+def test_pooling_sidecars_of_different_width_keeps_every_row_on_its_own_options() -> None:
+    """The merged matrix must stay left-aligned and per-item.
+
+    Right-aligning, taking min instead of max width, or refilling ``n_options`` with the
+    pooled width all leave the shapes plausible while shifting probabilities off their
+    option index. The confidence assertion is what catches the shift.
+    """
+
+    def piece(counts: tuple[int, ...], seed: int) -> PredictionRows:
+        rng = np.random.default_rng(seed)
+        draws = [rng.dirichlet(np.ones(count)) for count in counts]
+        options = pad_option_probs([np.asarray(draw, dtype=np.float64) for draw in draws])
+        predicted = np.asarray([int(draw.argmax()) for draw in draws], dtype=np.intp)
+        return PredictionRows(
+            confidence=np.asarray([float(draw.max()) for draw in draws], dtype=np.float64),
+            correct=np.ones(len(draws), dtype=np.bool_),
+            gold=predicted,
+            predicted=predicted,
+            options=options,
+        )
+
+    merged = _concat_predictions([piece((3, 3), 1), piece((5, 4), 2)])
+    assert merged.options is not None
+    assert merged.options.probs.shape == (4, 5)
+    assert list(merged.options.n_options) == [3, 3, 5, 4]
+    for index, count in enumerate(merged.options.n_options):
+        assert merged.options.probs[index, :count].sum() == pytest.approx(1.0)
+        assert merged.options.probs[index, count:].sum() == 0.0
+    assert np.allclose(merged.options.probs.max(axis=1), merged.confidence, atol=0.0)
+
+
+def test_pooling_drops_to_none_when_one_seed_has_no_distributions() -> None:
+    with_probs = PredictionRows(
+        confidence=np.asarray([1.0]),
+        correct=np.ones(1, dtype=np.bool_),
+        gold=np.zeros(1, dtype=np.intp),
+        predicted=np.zeros(1, dtype=np.intp),
+        options=pad_option_probs([np.asarray([1.0])]),
+    )
+    without = PredictionRows(
+        confidence=np.asarray([1.0]),
+        correct=np.ones(1, dtype=np.bool_),
+        gold=np.zeros(1, dtype=np.intp),
+        predicted=np.zeros(1, dtype=np.intp),
+        options=None,
+    )
+    assert _concat_predictions([with_probs, without]).options is None

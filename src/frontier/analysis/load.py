@@ -16,7 +16,9 @@ import numpy as np
 import pandas as pd
 
 from frontier.io.predictions import (
+    OptionProbs,
     PredictionRows,
+    ProbMatrix,
     predictions_key,
     predictions_path,
     read_predictions_path,
@@ -259,6 +261,33 @@ def _concat_predictions(pieces: list[PredictionRows]) -> PredictionRows:
         correct=np.concatenate([piece.correct for piece in pieces]),
         gold=np.concatenate([piece.gold for piece in pieces]),
         predicted=np.concatenate([piece.predicted for piece in pieces]),
+        options=_concat_options(pieces),
+    )
+
+
+def _concat_options(pieces: list[PredictionRows]) -> OptionProbs | None:
+    """Pool the per-item distributions, re-padding to the widest seed.
+
+    One seed missing its distribution drops the whole pool to ``None``; a matrix covering
+    part of the items would recalibrate on a subset with nothing to signal it.
+    """
+    seen: list[OptionProbs] = []
+    for piece in pieces:
+        if piece.options is None:
+            return None
+        seen.append(piece.options)
+    width = max(item.probs.shape[1] for item in seen)
+    padded: list[ProbMatrix] = []
+    for item in seen:
+        if item.probs.shape[1] == width:
+            padded.append(item.probs)
+            continue
+        grown = np.zeros((item.probs.shape[0], width), dtype=np.float64)
+        grown[:, : item.probs.shape[1]] = item.probs
+        padded.append(grown)
+    return OptionProbs(
+        probs=np.concatenate(padded),
+        n_options=np.concatenate([item.n_options for item in seen]),
     )
 
 

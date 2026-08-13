@@ -11,15 +11,25 @@ from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
+import pytest
 
 from frontier.eval.provider import LogitProvider
 from frontier.eval.records import LETTERS, EvalRecord
 from frontier.io.predictions import predictions_key, predictions_path, read_predictions
 from frontier.io.store import ResultStore, read_rows
 from frontier.latency.rig import LatencyMemory
+from frontier.pipeline import runner as runner_module
 from frontier.pipeline.config import ResolvedConfig
 from frontier.pipeline.runner import run
-from frontier.schema import EvalSpec, Latency, MachineState, Memory, RunMode, VariantConfig
+from frontier.schema import (
+    EvalSpec,
+    Latency,
+    MachineState,
+    Memory,
+    ResultRow,
+    RunMode,
+    VariantConfig,
+)
 
 CONFIG_ROOT = Path(__file__).resolve().parents[2] / "configs"
 FP16 = CONFIG_ROOT / "variants" / "fp16.yaml"
@@ -251,3 +261,41 @@ def test_synthetic_runner_skips_predictions_when_disabled(tmp_path: Path) -> Non
     )
 
     assert not (tmp_path / "predictions").exists()
+
+
+def test_a_failed_sidecar_write_leaves_no_row_to_skip_on_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The store drives resume-skip, so a row banked ahead of a failed sidecar write would
+    be skipped forever with its per-item arrays unrecoverable."""
+
+    def factory(variant: VariantConfig, device: str) -> _SyntheticProvider:  # noqa: ARG001
+        return _SyntheticProvider()
+
+    def loader(spec: EvalSpec, *, seed: int) -> list[EvalRecord]:  # noqa: ARG001
+        return _records(N_ITEMS)
+
+    def go() -> list[ResultRow]:
+        return run(
+            FP16,
+            mode="smoke",
+            config_root=CONFIG_ROOT,
+            results_root=tmp_path,
+            provider_factory=factory,
+            slice_loader=loader,
+            timestamp="2026-07-13T00:00:00+00:00",
+            git_sha="deadbeef",
+            latency_probe=_canned_latency,
+        )
+
+    def explode(*args: object, **kwargs: object) -> Path:  # noqa: ARG001
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(runner_module, "write_predictions_rows", explode)
+    with pytest.raises(OSError, match="no space"):
+        go()
+    assert not (tmp_path / "results.jsonl").exists()
+
+    monkeypatch.undo()
+    assert len(go()) == 1
+    assert (tmp_path / "predictions").exists()

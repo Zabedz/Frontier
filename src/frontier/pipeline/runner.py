@@ -20,7 +20,12 @@ from frontier.eval.extract import exact_match, score_items, to_robustness, to_ta
 from frontier.eval.loaders import load_arc_challenge, load_mmlu, load_mmlu_redux
 from frontier.eval.provider import LogitProvider
 from frontier.eval.records import EvalRecord
-from frontier.io.predictions import PredictionRows, predictions_key, write_predictions_rows
+from frontier.io.predictions import (
+    OptionProbs,
+    PredictionRows,
+    predictions_key,
+    write_predictions_rows,
+)
 from frontier.io.provenance import hardware_info, now_utc_iso, read_git_sha, stamp_provenance
 from frontier.io.store import ResultStore, append_row, read_jsonl_rows
 from frontier.latency.rig import LatencyMemory
@@ -172,7 +177,10 @@ def run(
             tok_s_per_gb=lat_mem.tok_s_per_gb,
             robustness=to_robustness(out.robustness),
         )
-        append_row(row, store)
+        # Sidecar first: the store is what `_done_seeds` reads to skip a finished seed, so a
+        # row banked ahead of a failed sidecar write is skipped forever and its per-item
+        # arrays are unrecoverable. An orphan sidecar costs nothing, since a key is only
+        # looked up from a row that exists and the write is atomic.
         if write_predictions:
             write_predictions_rows(
                 PredictionRows(
@@ -180,10 +188,12 @@ def run(
                     correct=correct,
                     gold=out.gold,
                     predicted=out.predicted,
+                    options=OptionProbs(probs=out.probs, n_options=out.n_options),
                 ),
                 root=results_root,
                 key=predictions_key(resolved.config_hash, seed, resolved.eval_spec.task_name),
             )
+        append_row(row, store)
         rows.append(row)
     return rows
 

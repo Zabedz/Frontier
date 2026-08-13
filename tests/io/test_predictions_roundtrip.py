@@ -23,7 +23,7 @@ def _rows(n: int) -> PredictionRows:
     correct = rng.uniform(0.0, 1.0, size=n) < confidence
     gold = rng.integers(0, 4, size=n).astype(np.intp)
     predicted = np.where(correct, gold, (gold + 1) % 4).astype(np.intp)
-    return PredictionRows(confidence, correct.astype(np.bool_), gold, predicted)
+    return PredictionRows(confidence, correct.astype(np.bool_), gold, predicted, options=None)
 
 
 def test_round_trip_preserves_values_and_dtypes(tmp_path: Path) -> None:
@@ -59,6 +59,7 @@ def test_length_mismatch_raises_naming_the_lengths(tmp_path: Path) -> None:
         correct=np.array([True], dtype=np.bool_),
         gold=np.array([0, 1], dtype=np.intp),
         predicted=np.array([0, 1], dtype=np.intp),
+        options=None,
     )
     with pytest.raises(ValueError, match="length"):
         write_predictions_rows(bad, root=tmp_path, key="k")
