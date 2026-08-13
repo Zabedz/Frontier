@@ -1,10 +1,5 @@
-"""Backend dispatch: pick the logit provider and the latency probe for a variant.
-
-The runner stays backend-agnostic behind the ``LogitProvider`` seam, so ``eval/`` and
-``metrics/`` see nothing new. Smoke mode collapses every backend onto the HF provider on
-the tiny model, because smoke proves the config, dispatch, scoring, and append path on a
-laptop and the real vLLM / llama.cpp stacks are GPU-only. Full mode selects the provider
-from ``backend.inference_backend``; ``torchao`` is a later WP and raises here.
+"""Backend dispatch: the logit provider and the latency probe for a variant. Smoke mode
+collapses every backend onto the HF provider, since the other stacks are GPU-only.
 """
 
 from __future__ import annotations
@@ -37,11 +32,8 @@ def build_provider(
 ) -> LogitProvider:
     """Pick the logit provider for a variant's ``backend.inference_backend``.
 
-    In smoke mode every backend returns an ``HFLogitProvider`` on the tiny model. In full
-    mode the backend field selects the provider: ``hf`` (bnb is handled inside the
-    provider off ``weight_dtype``), ``vllm`` (served from the compressed-tensors checkpoint,
-    or the base model directly for the FP16 gate that has no ``quant``), or ``llama_cpp``
-    (served from the GGUF checkpoint). ``torchao`` raises ``NotImplementedError``.
+    ``hf`` covers the bnb variants too, which the provider branches on off ``weight_dtype``.
+    ``vllm`` serves the base model directly for the FP16 gate, which has no ``quant``.
     """
     inference_backend = backend["inference_backend"]
     if mode == "smoke" or inference_backend == "hf":
@@ -83,9 +75,8 @@ def build_provider(
 def build_latency_probe(backend: Mapping[str, Any], *, mode: RunMode) -> LatencyProbe:
     """The latency probe for a backend.
 
-    Smoke, and full-mode ``hf``, use the WP4 CUDA-event rig (``default_latency``). Full-mode
-    ``vllm`` and ``llama_cpp`` use their native benchmarker, because their models are not
-    ``nn.Module``s and Python-side per-token marking of them is not meaningful.
+    Smoke and ``hf`` use the CUDA-event rig. vLLM and llama.cpp models are not
+    ``nn.Module``s, so Python-side per-token marking is meaningless and each times itself.
     """
     inference_backend = backend["inference_backend"]
     if mode == "smoke" or inference_backend == "hf":

@@ -1,13 +1,8 @@
 """Orchestration: the batch x context sweep, and the real-probe wiring.
 
-``measure_latency_memory`` runs the sweep over injected seams (a driver, a clock
-factory, a machine probe, a memory probe), so the whole orchestration is exercised on
-CPU with fakes. ``default_latency`` wires the real probes from a loaded provider and
-picks the smoke vs full parameters. Latency is a property of the variant and the
-hardware, not of an eval seed, so the runner calls this once per run.
-
-The cost proxy is decimal throughout: MB is bytes / 1e6 and GB is MB / 1000, matching
-``docs/results_schema.md``.
+Latency is a property of the variant and the hardware, so the runner calls
+``default_latency`` once per run. Sizes are decimal throughout (MB is bytes / 1e6, GB is
+MB / 1000), matching ``docs/results_schema.md``.
 """
 
 from __future__ import annotations
@@ -68,16 +63,10 @@ def measure_latency_memory(
 ) -> LatencyMemory:
     """Run the batch x context sweep and assemble the schema records.
 
-    Per ``bs`` in ``spec.batch_sizes``: capture ``before`` clocks, collect
-    ``warmup + n_trials`` trials at the fixed prefill length ``context_lengths[0]``,
-    capture ``after`` clocks, reduce, and build one ``Latency`` whose ``machine_state``
-    is ``to_machine_state(before, after)``. TTFT is measured at that one prefill length
-    because ``schema.Latency`` has no per-context slot; ``Memory`` carries the full
-    context sweep, one entry per ``(bs, ctx)``.
-
-    The cost proxy uses ``reference_batch`` (default ``max(batch_sizes)``): its
-    throughput over its peak VRAM at the reference context, ``NaN`` when that peak is
-    ``<= 0``.
+    TTFT is measured at the single prefill length ``context_lengths[0]`` because
+    ``schema.Latency`` has no per-context slot; ``Memory`` carries the full context sweep.
+    The cost proxy comes from ``reference_batch`` (default the largest batch size), its
+    throughput over its peak VRAM at that prefill length.
     """
     context_len = spec.context_lengths[0]
     n_total = spec.warmup + spec.n_trials
@@ -133,12 +122,10 @@ def default_latency(
 ) -> LatencyMemory:
     """Wire the real probes from a loaded provider and run the sweep.
 
-    Requires ``provider.loaded_model`` (only the HF Track-A provider is in scope);
-    raises ``ValueError`` naming the provider type otherwise. Builds an
-    ``HFGenerationDriver`` and an ``HFMemoryProbe`` from the loaded model, an
-    ``NvidiaSmiProbe`` for the machine state, and the clock factory for the device.
-    ``decode_len`` is ``SMOKE_DECODE_LEN`` in smoke and ``FULL_DECODE_LEN`` in full; the
-    batch/context/n_trials/warmup all come from the resolved ``LatencySpec``.
+    Requires ``provider.loaded_model``, which only the HF Track-A provider has, so the
+    weights load once for both scoring and timing. ``decode_len`` is ``SMOKE_DECODE_LEN``
+    in smoke and ``FULL_DECODE_LEN`` in full; the rest of the sweep comes from the
+    resolved ``LatencySpec``.
     """
     load = getattr(provider, "loaded_model", None)
     if load is None:
@@ -172,9 +159,9 @@ def default_latency(
 def cost_proxy(throughput_tok_s: float, peak_vram_mb: float) -> float:
     """The headline ``tok_s_per_gb``: decode throughput over peak VRAM in GB.
 
-    ``NaN`` when the peak is ``<= 0`` (an unmeasured or degenerate probe) rather than a
-    divide-by-zero. Shared with the Track-B native probes, which compute the same proxy
-    from their own throughput and nvidia-smi peak reading.
+    ``NaN`` when the peak is ``<= 0`` (an unmeasured or degenerate probe). The Track-B
+    native probes share this, computing the proxy from their own throughput and
+    nvidia-smi peak reading.
     """
     if peak_vram_mb <= 0.0:
         return math.nan
@@ -194,12 +181,7 @@ def _import_torch() -> Any:
 
 
 def _snapshot_dir(resolved: ResolvedConfig) -> Path | None:
-    """The local HF cache snapshot dir for the variant's model, or ``None`` if uncached.
-
-    Resolved through ``huggingface_hub.try_to_load_from_cache`` on ``config.json``, which
-    never hits the network. A cache miss or a missing ``huggingface_hub`` yields ``None``,
-    so ``weights_disk_mb`` degrades to ``0.0`` rather than raising.
-    """
+    """The variant's HF cache snapshot dir, or ``None`` when uncached; never hits the network."""
     try:
         from huggingface_hub import try_to_load_from_cache  # noqa: PLC0415
     except ImportError:

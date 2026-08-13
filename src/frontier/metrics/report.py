@@ -1,9 +1,4 @@
-"""Assemble the calibration battery into a ``schema.Quality`` row.
-
-``calibration_report`` reduces the softmax once and reuses ``(confidence, correct)``
-across the ECE family and the reliability curve; ``to_quality`` maps the report and
-the two bootstrap intervals onto the frozen ``Quality`` contract.
-"""
+"""Assemble the calibration battery and map it onto the frozen ``schema.Quality`` contract."""
 
 from __future__ import annotations
 
@@ -27,10 +22,10 @@ from frontier.schema import Quality
 
 @dataclass(frozen=True, slots=True)
 class CalibrationReport:
-    """The full per-variant calibration battery, one softmax reduction's worth.
+    """The full per-variant calibration battery.
 
-    The reliability curve is not a ``Quality`` field; it is carried here for the
-    plotting step and stored alongside the row.
+    ``reliability`` is carried for the plotting step and stored alongside the row; it has no
+    ``Quality`` field.
     """
 
     accuracy: float
@@ -52,11 +47,7 @@ def calibration_report(
     n_bins: int = DEFAULT_BINS,
     sweep: tuple[int, ...] = DEFAULT_SWEEP,
 ) -> CalibrationReport:
-    """Compute the calibration battery, reducing the softmax to top-label once.
-
-    The ECE family and the reliability curve share the single ``top_label``
-    reduction; Brier and NLL read the softmax directly.
-    """
+    """Compute the calibration battery, sharing one ``top_label`` reduction across it."""
     check_predictions(probs, gold)
     confidence, correct = top_label(probs, gold)
     decomposition = brier_decomposition(probs, gold, n_bins=n_bins)
@@ -92,9 +83,8 @@ def to_quality(
 ) -> Quality:
     """Map a report and its two bootstrap intervals onto ``schema.Quality``.
 
-    ``ece_ci`` is the interval on the equal-width ECE at the report's default bin
-    count, matching the reported ``ece_equal_width``. ``perplexity``,
-    ``temperature``, and ``temperature_scaled`` are supplied by the pipeline.
+    ``ece_ci`` has to be the interval on the equal-width ECE at the report's bin count, to
+    match the ``ece_equal_width`` it lands beside; the pairing is unchecked.
     """
     return Quality(
         accuracy=report.accuracy,

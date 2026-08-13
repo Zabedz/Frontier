@@ -1,20 +1,9 @@
-"""Flatten a nested ``ResultRow`` to a columnar row and back.
+"""Flatten a nested ``ResultRow`` to a wide parquet row and back, and to and from the
+nested jsonl record.
 
-The store keeps two mirrors of every row: a nested jsonl line (``to_record`` /
-``from_record``) and a wide parquet row (``flatten_record`` / ``unflatten_record``).
-Three field kinds need care:
-
-- Nested-record scalars flatten to dotted columns (``provenance.git_sha``,
-  ``quality.accuracy``) with parquet-native types.
-- ``quality.ece_bin_sweep`` (a ``dict[int, float]``) and the two variable-length
-  lists ``latency`` and ``memory`` serialize to one JSON-string column each, so a
-  populated ``latency``/``memory`` round-trips with no schema change once the latency
-  rig lands.
-- ``robustness`` flattens to three nullable float columns. Absence is a genuine SQL
-  null, not ``NaN``, so the reader reconstructs ``None`` exactly when
-  ``robustness.permutation_consistency`` is null. Read-back therefore goes through the
-  pyarrow ``to_pylist`` layer, which keeps null distinct from ``NaN``, not through a
-  pandas dtype.
+``ece_bin_sweep`` and the variable-length ``latency`` and ``memory`` lists each ride in
+one JSON-string column, so filling them needs no schema change. An absent ``robustness``
+flattens to nulls, which the reader turns back into ``None``.
 """
 
 from __future__ import annotations
@@ -85,10 +74,8 @@ RESULT_SCHEMA: pa.Schema = pa.schema([(name, _column_type(name)) for name in RES
 def to_record(row: ResultRow) -> dict[str, Any]:
     """``ResultRow`` to a nested, JSON-safe dict (one jsonl line's content).
 
-    ``dataclasses.asdict`` with one adjustment: ``ece_bin_sweep``'s int keys are
-    stringified so the dict is JSON-native. Non-finite floats (``perplexity`` and
-    ``tok_s_per_gb`` are ``NaN`` in WP3) are left as-is; the mirror is internal, so the
-    default ``json`` ``NaN`` token is acceptable and round-trips through ``json.loads``.
+    ``ece_bin_sweep``'s int keys are stringified. Non-finite floats keep the default
+    ``json`` ``NaN`` token, which round-trips through ``json.loads``.
     """
     record = dataclasses.asdict(row)
     sweep = record["quality"]["ece_bin_sweep"]

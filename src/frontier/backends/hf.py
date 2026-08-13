@@ -1,20 +1,5 @@
-"""The Hugging Face Track-A logit backend.
-
-``HFLogitProvider`` structurally satisfies the WP2 ``LogitProvider`` seam: it returns
-next-token logits at the answer position for a batch of prompts and resolves each
-answer letter to a single token id. Loading is lazy, so importing this module costs
-nothing and does not need the ``hf`` dependency group; ``transformers`` and ``torch``
-are imported the first time the model is used.
-
-The prompt seam is the load-bearing part. WP2's ``build_prompt`` returns plain
-user-turn text ending in ``Answer:``; an instruct model reads that letter honestly
-only inside its own chat format, so ``chat_wrap`` splits the prompt on
-``"\\n" + ANSWER_TRIGGER``, feeds the question through the tokenizer chat template with
-``add_generation_prompt=True``, and re-appends ``Answer:`` as an assistant prefill.
-The next token after ``Answer:`` is then ``" A"``, which is what the WP2
-leading-space candidate resolution expects. Raw concatenation (feed ``build_prompt``
-straight through, treating the instruct model as a base LM) is the documented
-fallback; it is a one-line change here.
+"""The Hugging Face Track-A logit backend. ``transformers`` and ``torch`` are imported on
+first use, so importing this module needs neither.
 """
 
 from __future__ import annotations
@@ -31,9 +16,7 @@ from frontier.eval.records import FloatArray, IntArray
 
 DEFAULT_REVISION = "main"
 
-# Configured weight_dtype -> torch dtype name, for the CUDA compute path only. On CPU
-# the compute dtype is always float32 (fp16/bf16 matmul on CPU is unsupported or very
-# slow), so weight_dtype does not reach this map there.
+# Configured weight_dtype -> torch dtype name, for the CUDA compute path only.
 _CUDA_COMPUTE_DTYPE = {
     "fp16": "float16",
     "bf16": "bfloat16",
@@ -57,11 +40,9 @@ class _ChatTokenizer(Protocol):
 
 
 def resolve_device(mode: str, *, cuda_available: bool | None = None) -> str:
-    """The device string for a run mode.
+    """The device string for a run mode: ``smoke`` is always CPU, ``full`` follows the GPU.
 
-    ``smoke`` is always ``"cpu"``. ``full`` is ``"cuda"`` when a GPU is present, else
-    ``"cpu"``. ``cuda_available`` is injectable so a test pins the branch without a
-    GPU; it defaults to ``torch.cuda.is_available()`` (imported lazily).
+    ``cuda_available`` is injectable so a test pins the branch on a machine without a GPU.
     """
     if mode == "smoke":
         return "cpu"
@@ -75,12 +56,9 @@ def resolve_device(mode: str, *, cuda_available: bool | None = None) -> str:
 def resolve_dtype(device: str, weight_dtype: str) -> str:
     """The torch dtype name actually used for the forward pass.
 
-    On ``cpu`` the compute dtype is ``"float32"`` regardless of the configured
-    ``weight_dtype``, because fp16/bf16 matmul on CPU is unsupported or very slow and
-    the smoke path is a wiring proof, not a real dtype measurement. On ``cuda`` the
-    configured ``weight_dtype`` maps to its torch dtype. The result row still records
-    the configured ``weight_dtype``, so it describes the variant, not the CPU
-    fallback; the device recorded in ``hardware_id`` is where the split is visible.
+    ``cpu`` is always ``"float32"``, since fp16/bf16 matmul there is unsupported or very slow.
+    The result row still records the configured ``weight_dtype``, describing the variant, and
+    ``hardware_id`` carries the device the run actually used.
     """
     if device == "cpu":
         return "float32"
@@ -95,13 +73,9 @@ def resolve_dtype(device: str, weight_dtype: str) -> str:
 def chat_wrap(tokenizer: _ChatTokenizer, prompt: str) -> str:
     """Wrap a non-CoT ``build_prompt`` string in the model's chat template.
 
-    The prompt must end in ``"\\n" + ANSWER_TRIGGER``; the part before is the user
-    content and ``Answer:`` becomes the assistant prefill re-appended after
-    ``add_generation_prompt=True``. A prompt that does not end in the trigger (the CoT
-    case, out of WP3 scope) raises ``ValueError`` so the non-CoT contract is enforced
-    rather than silently mis-wrapped. ``continue_final_message=True`` on an assistant
-    message is a version-fragile alternative to this string append; the append is
-    simpler and stable across transformers releases.
+    An instruct model reads the answer letter honestly only inside its own chat format. The
+    question goes through the template and ``Answer:`` is re-appended as an assistant prefill,
+    so the next token is ``" A"`` and the leading-space candidate resolution holds.
     """
     suffix = f"\n{ANSWER_TRIGGER}"
     if not prompt.endswith(suffix):
@@ -114,15 +88,15 @@ def chat_wrap(tokenizer: _ChatTokenizer, prompt: str) -> str:
         tokenize=False,
         add_generation_prompt=True,
     )
+    # continue_final_message is the API alternative; it shifts across transformers releases.
     return wrapped + ANSWER_TRIGGER
 
 
 def resolve_candidates(tokenizer: Tokenizer, letters: Sequence[str]) -> IntArray:
-    """Resolve the answer letters to single token ids, with the no-space fallback.
+    """Resolve the answer letters to single token ids.
 
-    Tries the ``" A"`` leading-space form the WP2 core assumes; if a letter splits it
-    retries the bare-letter form. If both split, the ``ValueError`` from the bare form
-    propagates: the tokenizer genuinely cannot represent the letter as one token.
+    The ``" A"`` leading-space form the eval core assumes is tried first, then the bare
+    letter; when both split, the tokenizer cannot represent the letter as one token.
     """
     try:
         return resolve_candidate_ids(tokenizer, letters, leading_space=True)
@@ -133,10 +107,8 @@ def resolve_candidates(tokenizer: Tokenizer, letters: Sequence[str]) -> IntArray
 class HFLogitProvider:
     """Next-token answer-position logits from a Hugging Face causal LM.
 
-    Lazy: the tokenizer and model load on first use, left-padded so the last column of
-    every batched row is the real final token. The provider structurally satisfies the
-    WP2 ``LogitProvider`` protocol and carries ``backend_version`` so the runner can
-    stamp it without widening that protocol.
+    The tokenizer and model load on first use, left-padded so the last column of every
+    batched row is that row's real final token.
     """
 
     def __init__(
@@ -182,17 +154,12 @@ class HFLogitProvider:
     def _load_bnb(self, transformers: Any, torch: Any) -> Any:  # pragma: no cover
         """Load the model quantised through bitsandbytes on the CUDA path.
 
-        A bnb-quantised model must be placed with ``device_map={"": 0}`` at load time;
-        it cannot be moved with ``.to(device)`` afterwards, which is why the caller skips
-        the ``.to`` for this branch. The compute dtype comes from
-        ``resolve_bnb_compute_dtype`` (bf16 for the Qwen family), used both as the
-        activation dtype and as ``bnb_4bit_compute_dtype`` on the config.
+        A bnb model is placed by ``device_map`` at load and cannot be moved with ``.to``
+        afterwards, so the caller skips its ``.to`` for this branch.
         """
         compute_name = resolve_bnb_compute_dtype(self.weight_dtype)
         kwargs = bnb_config_kwargs(self.weight_dtype, compute_dtype=compute_name)
         if "bnb_4bit_compute_dtype" in kwargs:
-            # Resolve the string dtype name to the real torch dtype only for the 4-bit
-            # (NF4) path; the int8 kwargs carry no compute dtype, so nothing is added there.
             kwargs["bnb_4bit_compute_dtype"] = getattr(torch, compute_name)
         quant_config = transformers.BitsAndBytesConfig(**kwargs)
         return transformers.AutoModelForCausalLM.from_pretrained(
@@ -209,11 +176,7 @@ class HFLogitProvider:
         return self._backend_version
 
     def loaded_model(self) -> tuple[Any, Any]:
-        """Ensure the model is loaded and return ``(model, tokenizer)`` for the rig.
-
-        The latency rig drives timed generation on these same weights, so the model
-        loads once for both scoring and timing rather than a second time.
-        """
+        """Load if needed and return ``(model, tokenizer)`` so the rig times the scored weights."""
         self._ensure_loaded()
         return self._model, self._tokenizer
 
@@ -229,12 +192,10 @@ class HFLogitProvider:
         return ids
 
     def next_token_logits(self, prompts: Sequence[str]) -> FloatArray:
-        """Answer-position logits for a batch of chat-wrapped prompts.
+        """Answer-position logits for a batch of prompts, shape ``(len(prompts), vocab)``.
 
-        Each prompt is chat-wrapped, the batch is left-padded and tokenized with the
-        template's special tokens already in place (``add_special_tokens=False`` avoids
-        a doubled BOS), and one forward pass yields ``logits[:, -1, :]`` as a
-        ``(len(prompts), vocab)`` float64 array.
+        ``add_special_tokens=False`` avoids a doubled BOS: the chat template already emitted
+        the special tokens as text.
         """
         self._ensure_loaded()
         import torch  # noqa: PLC0415
@@ -244,8 +205,7 @@ class HFLogitProvider:
             texts, return_tensors="pt", padding=True, add_special_tokens=False
         ).to(self.device)
         with torch.inference_mode():
-            # logits_to_keep=1: only the answer position is read, so materialising
-            # logits for every position would waste memory (vocab is ~152k here).
+            # Only the answer position is ever read, and the vocab is ~152k wide.
             output = self._model(**encoded, logits_to_keep=1)
         final = output.logits[:, -1, :].to(torch.float32).cpu().numpy()
         return np.asarray(final, dtype=np.float64)

@@ -1,25 +1,5 @@
-"""The vLLM Track-B logit provider.
-
-vLLM does not expose raw logit tensors; it returns per-position ``logprobs``. The
-candidate letters must be present in what comes back for every item and every option
-order, so the provider requests ``logprobs=-1`` (the full vocab) and reads only the
-known letter ids out of each returned dict. Under the V1 engine the returned logprobs
-are the raw model output, taken before any logits processor and before temperature, so
-an ``allowed_token_ids`` mask does not reshape the returned top-k; full-vocab is the
-construction that guarantees every letter is present at any rank.
-
-Why this reproduces the HF Track-A confidence exactly: vLLM returns
-``logprob = logit - logsumexp(vocab)``, a single per-position constant subtracted from
-every candidate's logit. The eval core softmaxes only the candidate-letter values, and
-softmax is invariant to a shared additive constant, so the candidate distribution is
-bit-for-bit the quantity the HF backend computes. Every call runs at ``temperature=1.0``,
-which makes any temperature scaling a no-op wherever the backend applies it. The
-FP16-on-vLLM fidelity gate is the empirical proof of this equivalence.
-
-Prompt fidelity: the provider holds a HF ``AutoTokenizer``, reuses ``hf.chat_wrap`` to
-build the exact Track-A prompt string, tokenises it with ``add_special_tokens=False``
-(the chat template already carries the special tokens), and feeds the token ids straight
-to ``generate``, bypassing vLLM's own chat templating so the forward pass matches HF.
+"""The vLLM Track-B logit provider: full-vocab logprobs at ``T=1``. A logprob differs from
+the logit by one per-position constant, so the candidate softmax matches the HF backend.
 """
 
 from __future__ import annotations
@@ -33,19 +13,16 @@ from frontier.backends.hf import DEFAULT_REVISION, chat_wrap, resolve_candidates
 from frontier.eval.records import FloatArray, IntArray, letters_for
 from frontier.latency.native import vllm_gpu_memory_utilization
 
-# vLLM's TokensPrompt is a TypedDict, so a plain dict with this key is exactly what
-# ``generate`` accepts, and building it here avoids importing vllm on the CPU test path.
+# TokensPrompt is a TypedDict, so a plain dict with this key keeps vllm off the CPU test path.
 _PROMPT_TOKEN_IDS = "prompt_token_ids"
 
 
 class VllmLogitProvider:
     """Answer-position candidate logprobs from a vLLM engine, HF-comparable at ``T=1``.
 
-    ``model`` is the compressed-tensors checkpoint dir for a quantised variant, or the
-    base ``model_id`` for the FP16 fidelity gate (vLLM serves the HF model directly).
-    ``engine``, ``tokenizer``, and ``sampling_params_cls`` are injectable so the
-    extraction is driven by a fake on CPU; on the pod they are ``None`` and the real
-    ``vllm.LLM`` / ``AutoTokenizer`` / ``SamplingParams`` are built lazily on first use.
+    ``model`` is the compressed-tensors checkpoint dir, or the base ``model_id`` for the FP16
+    fidelity gate. ``engine``, ``tokenizer``, and ``sampling_params_cls`` are injectable so
+    the extraction runs against fakes on CPU; left ``None``, the real ones load on first use.
     """
 
     def __init__(
@@ -84,6 +61,7 @@ class VllmLogitProvider:
             return
         if self._engine is None:
             self._build_engine()  # pragma: no cover
+        # Full vocab: these logprobs are pre-processor, so a mask cannot reshape the top-k.
         self._sampling_params = self._sampling_cls(
             temperature=1.0, max_tokens=1, logprobs=-1, seed=self._seed
         )
@@ -98,9 +76,8 @@ class VllmLogitProvider:
         self._hf_tokenizer = transformers.AutoTokenizer.from_pretrained(
             self._tokenizer_id, revision=self._revision
         )
-        # Sized to the card, so a larger pod buys a larger KV cache. The latency probe's
-        # serve command calls the same helper: the engine's reservation is what the row
-        # records as peak VRAM, so the eval and the bench must ask for the same amount.
+        # The latency probe's serve command calls the same helper, so bench and eval reserve
+        # alike and the row's peak VRAM describes both.
         self._engine = vllm.LLM(
             model=self.model,
             dtype="auto",
@@ -113,6 +90,7 @@ class VllmLogitProvider:
         self._backend_version = str(vllm.__version__)
 
     def _token_prompt(self, prompt: str) -> dict[str, list[int]]:
+        # Feeding token ids bypasses vLLM's own chat templating, matching the HF forward pass.
         text = chat_wrap(self._hf_tokenizer, prompt)
         return {_PROMPT_TOKEN_IDS: self._hf_tokenizer.encode(text, add_special_tokens=False)}
 
@@ -124,12 +102,8 @@ class VllmLogitProvider:
     def candidate_token_ids(self, letters: Sequence[str]) -> IntArray:
         """One answer-position token id per letter, cached per letter tuple.
 
-        Resolved through the same leading-space-then-bare fallback the HF backend uses,
-        so the ids the eval core gathers are exactly the ids the full-vocab logprob row
-        is filled at. Raises ``ValueError`` when more letters are requested than
-        ``max_letters``: ``next_token_logits`` fills the row only at the ``A``..letter-N
-        ids resolved at load, so a letter beyond that would silently read ``-inf``
-        (probability 0) instead of its real logprob.
+        More than ``max_letters`` raises: ``next_token_logits`` fills the row only at the ids
+        resolved at load, so a wider letter set would read ``-inf`` as a real logprob.
         """
         self._ensure_loaded()
         if len(letters) > self._max_letters:
@@ -147,13 +121,10 @@ class VllmLogitProvider:
         return ids
 
     def next_token_logits(self, prompts: Sequence[str]) -> FloatArray:
-        """Answer-position candidate logprobs for a batch of chat-wrapped prompts.
+        """Answer-position candidate logprobs, shape ``(len(prompts), vocab)``.
 
-        Each prompt is chat-wrapped and tokenised to match the HF forward pass, generated
-        for one token with full-vocab logprobs, and read into a ``(len(prompts), vocab)``
-        row of ``-inf`` at only the resolved letter ids. The eval core gathers the item's
-        candidate ids out of that row and softmaxes, so the ``-inf`` non-letter entries
-        are never touched.
+        A row is ``-inf`` everywhere except the resolved letter ids, which is all the eval
+        core gathers.
         """
         self._ensure_loaded()
         token_prompts = [self._token_prompt(prompt) for prompt in prompts]

@@ -1,8 +1,6 @@
 """load_tidy / collapse_seeds over a store built from the io row fixtures.
 
-The io fixtures live one directory over (``tests/io/rows.py``); pytest puts each test
-file's own directory on ``sys.path``, so the shared fixture module is reached by adding
-that sibling directory here, the same ``from rows import`` the io tests use.
+The ``sys.path`` insert below reaches the shared fixture module in ``tests/io``.
 """
 
 from __future__ import annotations
@@ -67,7 +65,7 @@ def _variant(
 
 def test_load_tidy_parses_identity_and_cost_columns(tmp_path: Path) -> None:
     store = ResultStore(tmp_path)
-    append_row(row_with_latency(), store)  # fp16, baseline, populated latency/memory
+    append_row(row_with_latency(), store)  # fp16, baseline, with latency and memory filled
     append_row(
         _variant(sample_row(), name="int4-nf4", family="ptq", track="A", config_hash="1" * 64),
         store,
@@ -85,7 +83,7 @@ def test_load_tidy_parses_identity_and_cost_columns(tmp_path: Path) -> None:
 
     nf4 = by_variant["int4-nf4"]
     assert nf4["family"] == "ptq"
-    # sample_row carries no latency/memory, so its cost columns are NaN (dropped later).
+    # sample_row carries no latency or memory, so its cost columns come through NaN.
     assert math.isnan(nf4["itl_median_ms"])
     assert math.isnan(nf4["peak_vram_mb"])
 
@@ -143,9 +141,9 @@ def test_load_all_predictions_keeps_two_tasks_of_one_variant(tmp_path: Path) -> 
         _preds(), root=tmp_path, key=predictions_key(FP16_ARC_HASH, 0, "arc_challenge")
     )
 
-    tidy = load_tidy(store)  # both tasks present
+    tidy = load_tidy(store)
     pooled = load_all_predictions(tidy, root=tmp_path)
-    # One variant_name on two tasks must not collide: composite labels keep both.
+    # One variant_name on two tasks would collide without the composite label.
     assert len(pooled) == len(TWO_TASK_LABELS)
     assert set(pooled) == TWO_TASK_LABELS
     assert set(prediction_labels(tidy)) == TWO_TASK_LABELS

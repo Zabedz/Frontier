@@ -1,12 +1,8 @@
-"""Config resolution: deep-merge the layers, validate, type, and hash.
+"""Config resolution: deep-merge ``base.yaml``, the variant file, the eval profile, and
+``smoke.yaml`` in that order, validate against ``variant.schema.json``, type, and hash.
 
-A run's config is four YAML layers deep-merged lowest to highest: ``base.yaml``, the
-variant file, the eval profile (when ``--eval`` is given, else base's ``eval`` block is
-the default and equals ``primary-mmlu.yaml``), and ``smoke.yaml`` (when ``--mode
-smoke``). The merged dict is validated against ``variant.schema.json``, mapped onto the
-typed ``VariantConfig`` / ``EvalSpec``, and hashed over its canonical JSON. The hash is
-taken after all overlays, so a smoke run and a full run of the same variant get
-different hashes: the hash identifies the exact config that produced a row.
+The hash is taken after all overlays, so a smoke run and a full run of one variant get
+different hashes and the hash identifies the exact config that produced a row.
 """
 
 from __future__ import annotations
@@ -37,9 +33,8 @@ DEFAULT_CONFIG_ROOT = Path("configs")
 def deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
     """Recursively merge ``override`` onto ``base``, mutating neither.
 
-    Nested dicts merge key by key; any non-dict value from ``override`` (including a
-    list) replaces the base value wholesale. So smoke's ``seeds: [0]`` replaces the base
-    list rather than concatenating it.
+    Nested dicts merge key by key; any non-dict value from ``override``, a list included,
+    replaces the base value wholesale, so smoke's ``seeds: [0]`` replaces the base list.
     """
     merged = dict(base)
     for key, value in override.items():
@@ -54,9 +49,8 @@ def deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str
 def config_hash(resolved: Mapping[str, Any]) -> str:
     """SHA-256 hex of the canonical JSON of the resolved config.
 
-    ``sort_keys`` makes the hash invariant to the key order the merge produced; list
-    order is preserved because it is meaningful (``seeds`` order). The resolved dict
-    holds only YAML-native types, so the dump never meets a non-JSON value.
+    ``sort_keys`` makes the hash invariant to the key order the merge produced; list order
+    is preserved because it is meaningful (``seeds``).
     """
     canonical = json.dumps(
         resolved, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False
@@ -68,11 +62,9 @@ def config_hash(resolved: Mapping[str, Any]) -> str:
 class ResolvedConfig:
     """A fully merged, validated run configuration.
 
-    ``raw`` is the merged dict the hash is taken over and the schema validated against.
-    ``variant`` and ``eval_spec`` are the typed views (``eval_spec is variant.eval``).
-    ``backend`` is the raw ``backend`` block, kept here because the frozen
-    ``VariantConfig`` has no backend field; the runner reads it to build
-    ``schema.Backend``.
+    ``raw`` is the merged dict the hash is taken over and the schema validated against;
+    ``eval_spec`` is ``variant.eval``; ``backend`` is the raw ``backend`` block, which the
+    frozen ``VariantConfig`` has no field for.
     """
 
     raw: Mapping[str, Any]

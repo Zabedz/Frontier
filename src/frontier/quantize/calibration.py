@@ -1,13 +1,10 @@
 """The calibration-set builder for the compressed-tensors producers.
 
-GPTQ, AWQ, and SmoothQuant all pick scales from a small calibration corpus, and that
-corpus is an explicit axis of the study. The corpus is a parameter here: WP5 wires only
-the in-domain MMLU set, and WP6 adds an out-of-domain ``CorpusSpec`` at matched sample
-count and seqlen, holding the sampling seed, which is the only difference that axis is
-allowed to have.
-
-The dataset loader is injectable, so the render-and-tokenize logic is unit-tested on a
-tiny in-memory ``datasets.Dataset`` with a fake tokenizer, no download.
+GPTQ, AWQ, and SmoothQuant all pick scales from a small calibration corpus, so the corpus
+is a parameter: the out-of-domain ``CorpusSpec`` arrives at matched sample count, seqlen,
+and sampling seed, leaving the corpus as the only difference along that axis. The dataset
+loader is injectable, so render-and-tokenize is unit-tested on a tiny in-memory
+``datasets.Dataset`` with a fake tokenizer.
 """
 
 from __future__ import annotations
@@ -33,9 +30,8 @@ class CorpusSpec:
     render: Render
 
 
-# The in-domain corpus is MMLU's auxiliary_train split, disjoint from the test subset
-# the ECE is computed on, so there is no calibration/eval leakage. WP6 adds an "ood" key
-# here (e.g. allenai/c4 or wikitext) at the same sample count and seqlen.
+# auxiliary_train is disjoint from the test subset the ECE is computed on, so the
+# calibration set cannot leak into the eval.
 CALIBRATION_CORPORA: dict[CalibrationCorpus, CorpusSpec] = {
     "in_domain": CorpusSpec("cais/mmlu", "all", "auxiliary_train", "mcq"),
 }
@@ -68,11 +64,9 @@ def build_calibration_dataset(
 ) -> Any:
     """Load, render, shuffle(seed), select(num_samples), and tokenize a calibration set.
 
-    ``mcq`` render formats each row through ``eval.prompts.build_prompt`` so the
-    calibration activations sit in the same distribution as the MMLU eval. Tokenises with
-    ``padding=False, truncation=True, max_length=max_seq_length, add_special_tokens=False``
-    and drops the text columns, the shape llm-compressor's ``oneshot`` expects. Raises
-    ``ValueError`` for a corpus not yet wired (the ``ood`` key arrives in WP6).
+    ``mcq`` render puts each row through ``eval.prompts.build_prompt``, so the calibration
+    activations sit in the same distribution as the MMLU eval. The tokenised output is
+    unpadded and carries no text columns, the shape llm-compressor's ``oneshot`` expects.
     """
     try:
         spec = CALIBRATION_CORPORA[corpus]

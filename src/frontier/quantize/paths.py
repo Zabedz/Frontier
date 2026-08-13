@@ -1,11 +1,9 @@
 """Deterministic checkpoint-path derivation for the produced Track-B variants.
 
 The producers write to exactly the path :func:`checkpoint_path` returns and
-``build_provider`` reads from it, so producing and serving never disagree. The path
-encodes the calibration corpus and sample count, so the WP6 out-of-domain checkpoint
-lands beside the in-domain one without a collision, and the whole checkpoint tree moves
-to the pod's persistent volume with one ``--checkpoints`` flag rather than scattered
-path logic.
+``build_provider`` reads from it, so producing and serving agree. The path encodes the
+calibration corpus and sample count, so an out-of-domain checkpoint lands beside the
+in-domain one without a collision.
 """
 
 from __future__ import annotations
@@ -26,11 +24,7 @@ def model_slug(model_id: str) -> str:
 
 
 def gguf_quant_type(weight_dtype: str) -> str:
-    """Map a config ``weight_dtype`` to a ``llama-quantize`` type name.
-
-    ``q4_k_m`` -> ``Q4_K_M`` and so on. Raises ``ValueError`` naming the dtype for
-    anything not in :data:`GGUF_QUANT_TYPES`.
-    """
+    """Map a ``weight_dtype`` to a ``llama-quantize`` type name (``q4_k_m`` -> ``Q4_K_M``)."""
     try:
         return GGUF_QUANT_TYPES[weight_dtype]
     except KeyError:
@@ -43,19 +37,11 @@ def gguf_quant_type(weight_dtype: str) -> str:
 def checkpoint_path(variant: VariantConfig, backend: Mapping[str, Any], *, root: Path) -> Path:
     """Where a variant's produced checkpoint lives, deterministically.
 
-    vLLM (compressed-tensors)::
-
-        root / 'compressed_tensors' / slug / f'{kind}-{corpus}-{samples}s-g{group_size}'
-
-    llama.cpp (GGUF)::
-
-        root / 'gguf' / f'{slug}.{weight_dtype}.gguf'
-
-    ``kind`` is the short recipe kind (``gptq`` / ``awq`` / ``w8a8``) from
-    :func:`recipe_for`. Raises ``ValueError`` for a backend with no produced checkpoint
-    (``hf``, ``torchao``: bnb quantises the base model in-process, torchao is a later WP),
-    and for a vLLM variant that carries no ``quant`` block (the FP16 gate, which serves
-    the base model directly and never reaches this function).
+    vLLM lands at ``root/compressed_tensors/<slug>/<kind>-<corpus>-<samples>s-g<group>``
+    and llama.cpp at ``root/gguf/<slug>.<weight_dtype>.gguf``. Raises ``ValueError`` for
+    ``hf`` and ``torchao``, which quantise the base model in-process and produce no
+    checkpoint, and for a vLLM variant with no ``quant`` block, which is the FP16 gate
+    serving the base model directly.
     """
     inference_backend = backend["inference_backend"]
     slug = model_slug(variant.model.model_id)

@@ -1,8 +1,6 @@
 """Hand-built ``ResultRow`` fixtures for the io round-trip tests.
 
-The finite builder feeds the exact-equality round-trips; the NaN and populated-latency
-builders cover the deferred fields and the JSON-list encoding before the latency rig
-exists. Kept as plain functions (not fixtures) so a test can build several rows.
+Plain functions, so one test can build several rows.
 """
 
 from __future__ import annotations
@@ -110,11 +108,7 @@ def nan_row() -> ResultRow:
 
 
 def row_with_latency() -> ResultRow:
-    """A row with a populated ``latency``/``memory`` list, to prove the JSON encoding.
-
-    The latency rig does not exist yet, so this is hand-built to show the nested
-    ``Latency`` + ``MachineState`` and ``Memory`` round-trip through the JSON columns.
-    """
+    """A row with populated ``latency``/``memory`` lists, to prove the JSON-column encoding."""
     machine = MachineState(
         gpu_clock_sm_mhz=1500,
         gpu_clock_mem_mhz=6000,

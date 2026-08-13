@@ -1,13 +1,9 @@
-"""Per-run predictions sidecar: the raw calibration signal behind each result row.
+"""Per-item ``(confidence, correct, gold, predicted)`` sidecars, one per appended result
+row, at ``results/predictions/<key>.parquet``.
 
-The aggregate ``ResultRow`` keeps only ECE scalars and a frozen bin-count sweep; it
-retains no per-item confidence. The reliability gallery and the ECE-vs-bins sweep need
-the per-item ``(confidence, correct)`` arrays to re-bin freely, so the runner writes
-them alongside each appended row as ``results/predictions/<key>.parquet``. Analysis
-reads the store for the frontier chart and these sidecars for the calibration figures.
-
-The key is derived from columns already on the row (config hash, seed, task name), so
-the analysis join reconstructs it from the store frame with no separate index.
+The row itself keeps only ECE scalars and a frozen bin-count sweep, so the reliability
+gallery and the ECE-vs-bins sweep re-bin from these files. The key is derived from columns
+already on the row, so the analysis join rebuilds it from the store frame alone.
 """
 
 from __future__ import annotations
@@ -40,10 +36,7 @@ PREDICTIONS_SCHEMA: pa.Schema = pa.schema(
 class PredictionRows:
     """Per-item calibration signal for one scored row (one seed).
 
-    ``confidence`` and ``correct`` are the load-bearing pair for re-binning ECE and
-    drawing reliability; ``gold`` and ``predicted`` make the file self-describing and
-    let an independent accuracy check run off the sidecar. All four are the same
-    length ``n_items``.
+    All four arrays have length ``n_items``.
     """
 
     confidence: FloatArray
@@ -55,28 +48,22 @@ class PredictionRows:
 def predictions_key(config_hash: str, seed: int, task_name: str) -> str:
     """Filename stem for a row's predictions sidecar.
 
-    A row is uniquely identified by ``(config_hash, seed)``: ``config_hash`` is taken
-    over the fully merged config, which already folds in the eval profile, so two
-    profiles of the same variant get different hashes. ``task_name`` is folded in only
-    to keep the stem readable and to give the analysis join a defensive cross-check.
-    All three are columns on the stored row, so the key is reconstructable from the
-    store frame alone.
+    ``config_hash`` is taken over the fully merged config, which folds in the eval profile,
+    so ``(config_hash, seed)`` already identifies the row; ``task_name`` keeps the stem
+    readable and gives the analysis join a cross-check.
     """
     return f"{task_name}__{config_hash}__seed{seed}"
 
 
 def predictions_path(root: Path, key: str) -> Path:
-    """The sidecar path ``root / PREDICTIONS_SUBDIR / f"{key}.parquet"``."""
+    """The sidecar path for ``key`` under ``root``."""
     return root / PREDICTIONS_SUBDIR / f"{key}.parquet"
 
 
 def write_predictions_rows(rows: PredictionRows, *, root: Path, key: str) -> Path:
     """Write one sidecar atomically (tmp parquet, then ``Path.replace``); return its path.
 
-    Raises
-    ------
-    ValueError
-        If the four arrays disagree in length. The message names each length.
+    Raises ``ValueError``, naming each length, when the four arrays disagree.
     """
     _check_lengths(rows)
     path = predictions_path(root, key)

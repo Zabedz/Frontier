@@ -1,8 +1,7 @@
-"""CUDA-event timing and a short HF decode on real hardware. Skipped on every CPU box.
+"""CUDA-event timing and a short HF decode on real hardware.
 
-The CPU suite exercises the wall-clock path and the stubbed event bookkeeping; this is
-the only place the real ``CudaEventClock`` and a real decode loop run, so it is gated on
-a live CUDA device (and the model test also on ``FRONTIER_LIVE_MODELS``).
+The only place the real ``CudaEventClock`` and a real decode loop run, so it is gated on
+a live CUDA device.
 """
 
 from __future__ import annotations

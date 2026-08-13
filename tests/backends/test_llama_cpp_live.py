@@ -1,9 +1,4 @@
-"""Live llama.cpp checks. Gated, skipped on the CPU loop.
-
-Loads a real GGUF on the installed llama.cpp build and asserts the extraction is finite
-and the answer letters resolve to distinct single llama tokens. On a CUDA pod build it
-also asserts full offload, the zero-CPU-spill precondition for any GGUF latency number.
-"""
+"""Live llama.cpp checks: a real GGUF gives finite logits and single-token answer letters."""
 
 from __future__ import annotations
 

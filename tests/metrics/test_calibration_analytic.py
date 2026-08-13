@@ -1,4 +1,4 @@
-"""Known-answer calibration fixtures and the input guards. No oracle needed."""
+"""Known-answer calibration fixtures and the input guards."""
 
 from __future__ import annotations
 

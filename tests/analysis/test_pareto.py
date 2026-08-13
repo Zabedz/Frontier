@@ -1,7 +1,6 @@
 """Known-answer Pareto fronts: maximize accuracy, minimize cost.
 
-The six enumerated corners pin the domination rule exactly, including the tie and
-non-finite cases where an off-by-one in the strict-inequality logic would show.
+The tie and non-finite corners are where a slip in the strict-inequality logic shows.
 """
 
 from __future__ import annotations
@@ -55,8 +54,7 @@ def test_tied_cost_higher_accuracy_dominates() -> None:
 def test_nan_cost_is_off_the_front_and_spares_finite_points() -> None:
     accuracy = _f([0.9, 0.8, 0.95])
     cost = _f([100.0, 200.0, np.nan])
-    # The NaN point has the highest accuracy but a missing cost: off the front, and it
-    # neither dominates nor drops the finite winner P0.
+    # P2 has the top accuracy but no cost, so it is off the front and drops nobody.
     assert pareto_mask(accuracy, cost).tolist() == [True, False, False]
 
 

@@ -1,9 +1,5 @@
-"""The logit-provider protocol and the letter-token primitives.
-
-The eval core never imports a model. It obtains next-token logits through the narrow
-``LogitProvider`` protocol, which the real Hugging Face backend (next WP) and the
-synthetic test provider both satisfy. Candidate-id resolution and the two numeric
-primitives are pure functions the backend and the tests share.
+"""The ``LogitProvider`` protocol and the letter-token primitives. The eval core reaches a
+model only through this seam, so it imports no inference stack.
 """
 
 from __future__ import annotations
@@ -30,11 +26,7 @@ class LogitProvider(Protocol):
     """Next-token logits for a batch of prompts, plus the answer-letter token ids."""
 
     def candidate_token_ids(self, letters: Sequence[str]) -> IntArray:
-        """One token id per answer letter, in the same order as ``letters``.
-
-        The single id read at the answer position for each letter; the letter set is
-        fixed across an item's permutations, so this is resolved once per item.
-        """
+        """One token id per answer letter, in the same order as ``letters``."""
         ...
 
     def next_token_logits(self, prompts: Sequence[str]) -> FloatArray:
@@ -47,15 +39,9 @@ def resolve_candidate_ids(
 ) -> IntArray:
     """Map each answer letter to its single next-token id.
 
-    With ``leading_space=True`` (the default, matching a prompt that ends in
-    ``"Answer:"`` with no trailing space) the letter is encoded as ``" " + letter``,
-    the token that follows the colon. With ``leading_space=False`` the bare letter is
-    encoded, the convention when the trigger already ends in a space or the letter
-    opens a fresh assistant turn.
-
-    Each candidate must tokenise to exactly one id; otherwise raise ``ValueError``
-    naming the letter, the encoded string, and the id list, so a tokeniser that
-    splits a letter fails loudly rather than silently reading the wrong logit.
+    ``leading_space`` encodes ``" " + letter``, the token that follows a prompt ending in
+    ``"Answer:"``; the bare form suits a trigger that already ends in a space. A letter that
+    does not encode to exactly one id raises ``ValueError``.
     """
     ids: list[int] = []
     for letter in letters:
@@ -79,9 +65,7 @@ def softmax(x: FloatArray) -> FloatArray:
 def letter_probs(logits: FloatArray, candidate_ids: IntArray) -> FloatArray:
     """Softmax over only the candidate-letter logits.
 
-    Gathers ``logits[candidate_ids]`` and softmaxes them, giving a per-option
-    distribution over exactly the answer letters. The study scores this single-token
-    signal, which avoids the length-normalisation confound a full-option-string score
-    carries.
+    Scoring this single-token signal avoids the length-normalisation confound a
+    full-option-string score carries.
     """
     return softmax(logits[candidate_ids])

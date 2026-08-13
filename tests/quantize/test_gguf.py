@@ -1,7 +1,6 @@
-"""The GGUF producer seams, driven by a fake subprocess runner on CPU.
+"""The GGUF producer seams (converter argv, quantiser argv, per-file idempotence).
 
-Asserts the ``convert_hf_to_gguf.py`` and ``llama-quantize`` argv and per-file
-idempotence, with no llama.cpp present.
+A fake subprocess runner drives them, so no llama.cpp needs to be present.
 """
 
 from __future__ import annotations

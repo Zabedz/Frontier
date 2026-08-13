@@ -1,9 +1,7 @@
 """Pure Pareto-front computation: maximize accuracy, minimize a cost axis.
 
-The variant count is tens, so the O(n^2) pairwise domination test built with numpy
-broadcasting is instant and trivially unit-testable. Non-finite points (a missing
-cost from a skipped latency profile) are never on the front and never knock a finite
-point off it.
+The variant count is tens, so an O(n^2) pairwise domination test over numpy broadcasts
+is fast enough and stays easy to unit-test.
 """
 
 from __future__ import annotations
@@ -20,10 +18,9 @@ def pareto_mask(accuracy: FloatArray, cost: FloatArray) -> BoolArray:
     """Boolean mask of the Pareto-optimal points: maximize accuracy, minimize cost.
 
     Point ``i`` is dominated iff some finite ``j`` has ``cost[j] <= cost[i]`` and
-    ``accuracy[j] >= accuracy[i]`` with at least one inequality strict; every
-    non-dominated finite point gets ``True``. A point with non-finite accuracy or cost
-    is never on the front. Co-located or tied points do not dominate each other (the
-    strict-inequality requirement), so a set of identical optima all stay on the front.
+    ``accuracy[j] >= accuracy[i]`` with at least one inequality strict. A point with
+    non-finite accuracy or cost sits off the front and dominates nothing. Tied points do
+    not dominate each other, so a set of identical optima all stay on the front.
     """
     if accuracy.shape != cost.shape:
         raise ValueError(f"accuracy has shape {accuracy.shape} but cost has shape {cost.shape}")
@@ -41,8 +38,7 @@ def pareto_mask(accuracy: FloatArray, cost: FloatArray) -> BoolArray:
 def pareto_order(accuracy: FloatArray, cost: FloatArray) -> IntArray:
     """Indices of the front sorted by cost ascending, ties broken by accuracy descending.
 
-    This is the draw order for the connecting envelope line that traces the
-    upper-left frontier.
+    This is the draw order for the chart's connecting envelope line.
     """
     front = np.flatnonzero(pareto_mask(accuracy, cost))
     keys = np.lexsort((-accuracy[front], cost[front]))

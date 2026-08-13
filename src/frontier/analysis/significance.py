@@ -1,16 +1,8 @@
-"""Paired significance over banked rows: is the calibration loss bigger than the
-accuracy loss, and by how much.
+"""Paired significance over banked rows: whether calibration degrades faster than accuracy.
 
-A stored ``ResultRow`` keeps aggregate ECE and its own single-variant interval, which
-says nothing about a difference between two variants. The per-item sidecars keep the
-``(confidence, correct)`` pairs a paired bootstrap needs, so this module joins each
-variant to its within-track reference and runs the four paired statistics on the two
-sidecars.
-
-The join is the dangerous part. Paired resampling assumes the two arrays describe the
-same items in the same order; feed it two variants scored over different slices and it
-returns a plausible number with no symptom. ``_check_alignment`` compares the stored
-gold vectors before any resampling and refuses the pair on any disagreement.
+A stored row keeps one single-variant interval, so the paired statistics run on the
+per-item sidecars. A pairing over mismatched items is silent, so ``_check_alignment``
+compares the stored gold vectors before any resampling.
 """
 
 from __future__ import annotations
@@ -57,7 +49,7 @@ class VariantPair:
 
 @dataclass(frozen=True, slots=True)
 class Skipped:
-    """A variant that produced no pair, with the reason it produced none."""
+    """A variant that produced no pair."""
 
     variant: str
     task: str
@@ -68,12 +60,11 @@ class Skipped:
 class PairSignificance:
     """Every paired statistic for one variant against its reference.
 
-    ``delta_*`` are absolute differences (variant minus reference), the two the
-    methodology has always required. ``damage_gap`` and ``damage_ratio`` put the two
-    losses on one relative scale: the gap answers whether calibration degrades faster,
-    the ratio answers by what multiple. ``delta_ece_sweep`` repeats the ECE delta at
-    each bin count in the sweep plus the headline count, since a binned ECE that changes
-    sign with the bin count does not support a claim at any single count.
+    ``delta_*``: absolute differences, variant minus reference. ``damage_gap`` and
+    ``damage_ratio`` put the two losses on one relative scale, the gap answering whether
+    calibration degrades faster and the ratio by what multiple. ``delta_ece_sweep``
+    repeats the ECE delta at each sweep bin count plus the headline count, since an ECE
+    delta that changes sign with the bin count supports no claim at a single count.
     """
 
     pair: VariantPair
@@ -101,14 +92,7 @@ class PairSignificance:
 
 
 def load_references(path: Path = DEFAULT_REFERENCES_PATH) -> dict[str, str]:
-    """Read the backend-to-reference-variant map.
-
-    Raises
-    ------
-    ValueError
-        If the file has no ``references`` mapping, or maps a backend to something other
-        than a variant name.
-    """
+    """Read the backend-to-reference-variant map."""
     with path.open(encoding="utf-8") as handle:
         loaded = yaml.safe_load(handle)
     if not isinstance(loaded, dict) or "references" not in loaded:
@@ -129,10 +113,8 @@ def resolve_pairs(
 ) -> tuple[list[VariantPair], list[Skipped]]:
     """Pair every variant with the reference for its backend, on each task separately.
 
-    A variant is skipped when it is the reference itself, when its backend has no
-    reference configured, when the reference was not scored on the same task, or when
-    the two carry different seed sets (the sidecar pooling concatenates seeds, so
-    unequal seed sets would misalign the pairing).
+    A variant carrying a different seed set from its reference is skipped: the sidecar
+    pooling concatenates seeds, so unequal sets would misalign the pairing.
     """
     pairs: list[VariantPair] = []
     skipped: list[Skipped] = []
@@ -191,10 +173,8 @@ def pair_significance(
 ) -> PairSignificance:
     """Run every paired statistic for one pair, reference first, variant second.
 
-    Raises
-    ------
-    ValueError
-        If the two sidecars do not describe the same items in the same order.
+    Raises ``ValueError`` unless the two sidecars describe the same items in the same
+    order.
     """
     _check_alignment(pair, reference_rows, variant_rows)
     arrays = (
@@ -224,9 +204,7 @@ def pair_significance(
         n_resamples=n_resamples,
         rng=rng,
     )
-    # The headline bin count usually sits inside the sweep, and both would be the same
-    # bootstrap over the same resamples, so the sweep is computed first and the headline
-    # read out of it.
+    # The headline count is read out of the sweep, so both share one set of resamples.
     sweep = {
         bins: paired_delta_ece_ci(
             *arrays,
@@ -263,8 +241,8 @@ def significance_table(
     """Resolve the pairs from the frame and run every statistic on each.
 
     A missing sidecar, or a variant pooling rows scored under more than one config hash,
-    is skipped with that reason. A pair whose sidecars disagree about the items raises,
-    because that is a corrupted store.
+    is skipped with that reason. Sidecars that disagree about the items raise, since that
+    is a corrupted store.
     """
     pairs, skipped = resolve_pairs(tidy, references)
     results: list[PairSignificance] = []
@@ -295,8 +273,7 @@ def significance_table(
 
 
 def to_frame(results: Sequence[PairSignificance]) -> pd.DataFrame:
-    """One row per pair. The bin sweep rides in a JSON column, as the store does for
-    its latency and memory lists."""
+    """One row per pair; the bin sweep rides in a JSON column, as the store's lists do."""
     records = [
         {
             "variant": item.pair.variant,

@@ -1,10 +1,4 @@
-"""Contract tests for the scaffold.
-
-The package imports, the result-row schema cannot be built without its provenance
-and backend, and every variant config on disk validates against the JSON Schema.
-These guard the scaffolding; the calibration maths get their own suite once
-implemented (see tests/README.md).
-"""
+"""Contract tests for the scaffold: the schema dataclasses and the variant configs on disk."""
 
 from __future__ import annotations
 

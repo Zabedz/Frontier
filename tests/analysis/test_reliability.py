@@ -1,7 +1,6 @@
 """Reliability figure, gallery, and ECE-vs-bins sweep render to non-empty PNGs.
 
-The sweep test also checks the Option-A behaviour: the sidecar recomputes ECE at more
-bin counts than the six frozen on the stored row.
+The sweep recomputes ECE from the sidecar at more bin counts than the row freezes.
 """
 
 from __future__ import annotations

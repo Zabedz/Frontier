@@ -1,8 +1,6 @@
-"""The compressed-tensors producer's CPU-checkable parts: completion and idempotence.
+"""The compressed-tensors producer's CPU-checkable parts, with no GPU ``oneshot`` run.
 
-The GPU ``oneshot`` is not run here; these cover the early-return guard (a complete
-checkpoint is not re-quantised) and the no-quant rejection, so a re-run of the batch
-driver never wastes a calibration pass and a misrouted config fails loudly.
+The completion guard keeps a re-run of the batch driver from repeating a calibration pass.
 """
 
 from __future__ import annotations
@@ -39,8 +37,7 @@ def test_producer_returns_early_for_a_complete_checkpoint(tmp_path: Path) -> Non
     resolved = resolve_config(CONFIG_ROOT / "variants" / "int4-gptq.yaml", config_root=CONFIG_ROOT)
     out = checkpoint_path(resolved.variant, resolved.backend, root=tmp_path)
     _complete_checkpoint(out)
-    # A re-run must not reach the GPU ``oneshot`` (which would import llmcompressor); it
-    # returns the existing path instead.
+    # A re-run must not reach the GPU ``oneshot``, which would import llmcompressor.
     result = produce_compressed_tensors(
         resolved.variant, resolved.backend, checkpoints_root=tmp_path
     )

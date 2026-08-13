@@ -1,11 +1,5 @@
-"""Task evaluation: dataset loaders (MMLU / MMLU-Redux / ARC), prompt building,
-answer-letter confidence extraction with cyclic permutation debiasing, and
-exact-match correctness. Produces the per-item probability rows and gold labels the
-metrics package consumes.
-
-The package is model-agnostic and CPU-only. It obtains next-token logits through the
-``LogitProvider`` protocol; the real Hugging Face backend that produces them is a
-later work package.
+"""Task evaluation: MMLU / MMLU-Redux / ARC loaders, prompt building, answer-letter confidence
+extraction with cyclic debiasing, and exact match, all behind the ``LogitProvider`` seam.
 """
 
 from __future__ import annotations

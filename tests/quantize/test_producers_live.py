@@ -1,8 +1,6 @@
-"""Live producer checks. Pod-only, gated, skipped on the CPU loop.
+"""Live producer check, pod-only: the checkpoint lands at ``checkpoint_path`` and reloads.
 
-Runs ``produce_compressed_tensors`` and ``produce_gguf`` on a small model and asserts the
-checkpoint lands at ``checkpoint_path`` and re-loads. The compressed-tensors arm needs the
-GPU (``oneshot`` calibrates on device); the GGUF arm needs the llama.cpp tooling.
+``oneshot`` calibrates on device, so the check needs a GPU.
 """
 
 from __future__ import annotations

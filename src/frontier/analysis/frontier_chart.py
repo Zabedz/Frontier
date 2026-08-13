@@ -1,14 +1,8 @@
 """The frontier chart: accuracy on y, a cost axis on x, one marker per variant.
 
-The desirable corner is upper-left (high accuracy, low cost), so all three cost axes
-read low-is-better. The Pareto front is traced with a connecting envelope and its
-markers are emphasized; dominated variants stay as plain markers. Colour is assigned
-by the entity (family or track) in the palette's fixed order, never by rank, and the
-front variants are directly labelled so identity never rests on colour alone.
-
-The matplotlib ``Figure``/``Axes`` objects are an untyped boundary (the package is a
-skipped import for mypy), so the drawing helpers take them as ``Any``; every value
-this module returns stays a concrete ``Path``.
+The desirable corner is upper-left, so all three cost axes read low-is-better.
+matplotlib is a skipped import for mypy, so the drawing helpers take ``Figure``/``Axes``
+as ``Any``.
 """
 
 from __future__ import annotations
@@ -62,13 +56,11 @@ def frontier_chart(
 ) -> Path:
     """Render the frontier chart to ``out_path`` (PNG) and return the path.
 
-    ``tidy`` is a per-variant frame (one row per variant, e.g. from ``collapse_seeds``).
-    ``x`` selects the cost axis via ``X_AXES``; the mixed-track default is memory, the
-    axis comparable across both tracks. ``color_by`` colours markers by family or track.
-    ``annotate`` labels the Pareto front (``"front"``), every variant (``"all"``), or
-    none. Drawing a non-cross-track axis (latency, cost_inv) on a frame that spans both
-    tracks warns, because those axes embed a per-backend clock and are not comparable
-    across tracks; ``allow_cross_track=True`` acknowledges the caveat and silences it.
+    ``tidy`` holds one row per variant, as ``collapse_seeds`` returns. ``x`` selects the
+    cost axis via ``X_AXES``; memory is the default because it is the axis comparable
+    across both tracks. ``annotate`` labels the Pareto front, every variant, or nothing.
+    A non-cross-track axis (latency, cost_inv) on a frame spanning both tracks warns,
+    since those axes embed a per-backend clock; ``allow_cross_track`` silences that.
     """
     spec = X_AXES[x]
     _warn_if_cross_track(tidy, spec, allow_cross_track=allow_cross_track)

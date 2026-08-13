@@ -1,14 +1,9 @@
-"""The append-only result store: a durable jsonl log plus a rebuilt parquet.
+"""The append-only result store: a durable jsonl log plus a parquet rebuilt from it.
 
-pyarrow cannot append in place to a closed parquet file (its footer is rewritten on
-close), so the jsonl is the append log and the parquet is rebuilt from it on every
-write. The rebuild is atomic (write ``results.parquet.tmp``, then an atomic
-``Path.replace``); the ``.gitignore`` excludes ``results/**/*.parquet.tmp``. The store
-is tens of rows, so rebuilding each time is cheap and keeps the two mirrors consistent.
-
-Read-back reconstructs rows from the pyarrow ``to_pylist`` layer, which preserves
-``None`` distinct from ``NaN`` (so an absent ``robustness`` comes back as ``None``, not
-a not-a-number). pandas is used only for the analysis ``DataFrame`` view.
+pyarrow rewrites a parquet footer on close and cannot append in place, so each write
+appends to the jsonl and rebuilds the parquet atomically (tmp file, then ``Path.replace``).
+The store is tens of rows, so the rebuild is cheap. The ``.parquet.tmp`` suffix is
+git-ignored; renaming it means editing ``.gitignore`` too.
 """
 
 from __future__ import annotations
@@ -66,7 +61,11 @@ def append_row(row: ResultRow, store: ResultStore) -> None:
 
 
 def read_rows(store: ResultStore) -> list[ResultRow]:
-    """Read the parquet and reconstruct every ``ResultRow`` in insertion order."""
+    """Read the parquet and reconstruct every ``ResultRow`` in insertion order.
+
+    Goes through pyarrow ``to_pylist``, which keeps a null distinct from ``NaN`` so an
+    absent ``robustness`` comes back as ``None``.
+    """
     table = pq.read_table(store.parquet_path)
     return [from_record(unflatten_record(flat)) for flat in table.to_pylist()]
 

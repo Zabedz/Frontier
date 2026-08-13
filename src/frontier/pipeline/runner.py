@@ -1,20 +1,10 @@
-"""The config-to-row orchestrator.
-
-``run`` resolves a config, loads the backend once, and for each seed loads the eval
-slice, scores it through the WP2 core, computes the WP1 calibration battery, stamps
-provenance, and appends one ``ResultRow`` to the store. The provider factory and the
-slice loader are injectable, so a CPU test drives the whole chain with a synthetic
-provider and in-memory records: no model, no network.
-
-``perplexity`` stays ``NaN`` (no held-out corpus yet). ``latency``, ``memory``, and
-``tok_s_per_gb`` are filled once per run by the injectable ``latency_probe`` (the
-backend's probe from ``build_latency_probe`` by default: the WP4 rig for HF, the native
-benchmarker for a Track-B backend); ``measure_latency=False`` restores the empty /
-``NaN`` fields for a secondary profile joined to the primary run in analysis.
+"""The config-to-row orchestrator: resolve a config, load the backend once, score each
+seed, and append one ``ResultRow`` per seed.
 
 The provider and the latency probe are chosen from ``backend.inference_backend`` by
-``frontier.backends.registry``, so the runner stays backend-agnostic; the injectable
-``provider_factory`` / ``latency_probe`` seams still let a test drive the chain directly.
+``frontier.backends.registry``, which keeps the runner backend-agnostic. Both, and the
+slice loader, are injectable, so a CPU test drives the whole chain with a synthetic
+provider and in-memory records.
 """
 
 from __future__ import annotations
@@ -66,12 +56,10 @@ class LatencyProbe(Protocol):
 
 
 def load_slice(spec: EvalSpec, *, seed: int) -> list[EvalRecord]:
-    """Dispatch on ``task_name`` (and ``labels`` for MMLU) to the WP2 loaders.
+    """Dispatch on ``task_name`` (and ``labels`` for MMLU) to the eval loaders.
 
-    ``mmlu`` + ``labels="redux"`` uses the de-noised clean subset; ``mmlu`` +
-    ``labels="raw"`` loads one ``cais/mmlu`` config (the smoke path). ``arc_challenge``
-    has no redux equivalent. Any other task raises ``ValueError`` naming it (the GPQA
-    reasoning arm arrives with the GPU generation WP).
+    ``mmlu`` + ``labels="redux"`` takes the de-noised clean subset; ``labels="raw"`` loads
+    one ``cais/mmlu`` config, which is the smoke path.
     """
     if spec.task_name == "mmlu":
         if spec.labels == "redux":
@@ -99,27 +87,21 @@ def run(
     write_predictions: bool = True,
     resume: bool = True,
 ) -> list[ResultRow]:
-    """Resolve config, score, compute metrics, assemble one row per seed, append.
+    """Resolve, score, and append one row per seed in ``eval_spec.seeds``, in seed order.
 
-    One row per seed in ``eval_spec.seeds`` (smoke has ``[0]`` -> one row). The provider
-    is built once and reused across seeds, because the model load is the expensive step.
-    Latency and memory are a property of the variant and the hardware, not of an eval
-    seed, so they are measured once (before the seed loop) and shared across the rows;
-    ``measure_latency=False`` (CLI ``--skip-latency``) leaves those fields empty for a
-    secondary profile that will be joined to the primary run's latency in analysis.
-    ``write_predictions=True`` (CLI default; ``--skip-predictions`` disables it) writes
-    each seed's per-item ``(confidence, correct, gold, predicted)`` sidecar next to the
-    appended row, the raw calibration signal the reliability figures read back.
-    Returns the appended rows in seed order.
+    The provider is built once and reused across seeds, because the model load is the
+    expensive step. Latency and memory are a property of the variant and the hardware, so
+    they are measured once before the seed loop and shared by every row;
+    ``measure_latency=False`` leaves those fields empty for a secondary profile that
+    analysis joins to the primary run's latency.
     """
     resolved = resolve_config(
         config_path, eval_profile=eval_profile, mode=mode, config_root=config_root
     )
     store = ResultStore(results_root)
 
-    # Resume: a row is keyed by (config_hash, seed, task), so a re-run after a pod wipe
-    # only does the seeds not already in the store, and skips the expensive model load
-    # entirely when a variant is already complete.
+    # Resume by (config_hash, seed, task), so a re-run after a pod wipe does the missing
+    # seeds only, and skips the model load when the variant is already complete.
     done = (
         _done_seeds(store, resolved.config_hash, resolved.eval_spec.task_name) if resume else set()
     )
@@ -165,7 +147,7 @@ def run(
             report,
             accuracy_ci=accuracy_ci(correct, rng=seed),
             ece_ci=ece_ci(out.confidence, correct, rng=seed),
-            perplexity=math.nan,
+            perplexity=math.nan,  # no held-out corpus yet
             temperature=1.0,
             temperature_scaled=False,
         )
@@ -207,7 +189,7 @@ def run(
 
 
 def _done_seeds(store: ResultStore, config_hash: str, task_name: str) -> set[int]:
-    """Seeds already recorded for this (config, task), read from the durable jsonl log."""
+    """Seeds already recorded for this (config, task), read from the jsonl log."""
     if not store.jsonl_path.exists():
         return set()
     return {

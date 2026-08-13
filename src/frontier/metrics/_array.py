@@ -1,8 +1,5 @@
-"""Array contracts for the metric core: the shared dtypes and the input guards.
-
-The aliases name the shape and dtype each metric expects; the guards raise a
-``ValueError`` that names the first offending index and its value, so a malformed
-batch fails at the entry point rather than deep inside a histogram.
+"""Shared array dtypes for the metric core, and the guards that reject a malformed batch
+at the entry point, naming the first offending index and its value.
 """
 
 from __future__ import annotations
@@ -22,21 +19,7 @@ _MATRIX_NDIM = 2
 def check_predictions(probs: ProbMatrix, gold: LabelArray, *, atol: float = 1e-4) -> None:
     """Guard the raw prediction inputs shared by the ECE, Brier, and NLL paths.
 
-    Parameters
-    ----------
-    probs
-        Per-item softmax rows, shape ``(n_items, n_classes)``.
-    gold
-        Gold class ids, shape ``(n_items,)``, each in ``[0, n_classes)``.
-    atol
-        Tolerance on the row-sum simplex check.
-
-    Raises
-    ------
-    ValueError
-        If the shapes disagree, the input is empty, a row is off the simplex by
-        more than ``atol``, or a gold id is out of range. The message names the
-        first offending index and value.
+    ``atol`` is the tolerance on the per-row simplex check.
     """
     if probs.ndim != _MATRIX_NDIM:
         raise ValueError(f"probs must be 2-D (n_items, n_classes), got shape {probs.shape}")
@@ -60,14 +43,7 @@ def check_predictions(probs: ProbMatrix, gold: LabelArray, *, atol: float = 1e-4
 
 
 def check_confidence(confidence: FloatArray, correct: CorrectArray) -> None:
-    """Guard the reduced 1-D confidence-space inputs of ``ece_from_confidence``.
-
-    Raises
-    ------
-    ValueError
-        If the arrays are not 1-D, disagree in length, are empty, or a confidence
-        lies outside ``[0, 1]``. The message names the first offending index.
-    """
+    """Guard the reduced 1-D confidence-space inputs of ``ece_from_confidence``."""
     if confidence.ndim != 1:
         raise ValueError(f"confidence must be 1-D, got shape {confidence.shape}")
     if correct.ndim != 1:

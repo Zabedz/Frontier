@@ -1,9 +1,7 @@
-"""Read-and-plot layer over the append-only result store.
+"""Read-and-plot layer over the result store: reads ``results/``, writes ``plots/``.
 
-Turns stored ``ResultRow``s (and their per-item predictions sidecars) into the two
-first-class figures: the accuracy-versus-cost frontier chart with its Pareto front,
-and the reliability-diagram gallery with the ECE-vs-bin-count sweep. Nothing here
-recomputes a model output; it reads ``results/`` and writes ``plots/``.
+Figures come from stored ``ResultRow``s and their per-item sidecars; no model output is
+recomputed here.
 """
 
 from __future__ import annotations

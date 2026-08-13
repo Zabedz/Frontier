@@ -1,8 +1,6 @@
 """Backend dispatch: provider selection and latency-probe mapping, no GPU touched.
 
-Full mode constructs the vLLM / llama.cpp providers without loading their engines (the
-providers are lazy), so the dispatch is asserted by the returned type and its served path
-on a laptop.
+The full-mode providers are lazy, so constructing one asserts dispatch on a laptop.
 """
 
 from __future__ import annotations

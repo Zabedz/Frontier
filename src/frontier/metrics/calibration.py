@@ -1,8 +1,6 @@
-"""Top-label reduction and the ECE family.
-
-``ece_from_confidence`` is the load-bearing core; every ECE entry point and the
-paired bootstrap reduce to it. It works only on the 1-D confidence and correctness
-arrays, never on the softmax, so a paired resample indexes it with one vector.
+"""Top-label reduction and the ECE family. Every entry point and the paired bootstrap reduce
+to ``ece_from_confidence``, which takes 1-D arrays a paired resample can index with one
+vector.
 """
 
 from __future__ import annotations
@@ -30,11 +28,7 @@ DEFAULT_SWEEP = (5, 10, 15, 20, 30, 50)
 
 
 def top_label(probs: ProbMatrix, gold: LabelArray) -> tuple[FloatArray, CorrectArray]:
-    """Reduce a softmax to its top-label confidence and correctness.
-
-    Returns the per-item max softmax probability and whether the argmax class is
-    the gold class.
-    """
+    """Reduce a softmax to its top-label confidence and correctness."""
     confidence: FloatArray = probs.max(axis=1)
     correct: CorrectArray = probs.argmax(axis=1) == gold
     return confidence, correct
@@ -50,8 +44,8 @@ def ece_from_confidence(
 ) -> float:
     """Expected calibration error from reduced confidence and correctness.
 
-    ``weighting="mass"`` is the classic bin-mass-weighted ECE; ``"equal"`` averages
-    the per-bin deviation over populated bins only (the ACE aggregation).
+    ``weighting="mass"`` is the classic bin-mass-weighted ECE; ``"equal"`` averages the
+    deviation over populated bins only (the ACE aggregation).
     """
     check_confidence(confidence, correct)
     stats = bin_stats(confidence, correct, n_bins, scheme)
@@ -87,8 +81,8 @@ def ece_equal_width(probs: ProbMatrix, gold: LabelArray, *, n_bins: int = DEFAUL
 def ece_equal_mass(probs: ProbMatrix, gold: LabelArray, *, n_bins: int = DEFAULT_BINS) -> float:
     """Mass-weighted equal-mass (adaptive) ECE, the lower-bias companion.
 
-    Under equal bin masses the mass weighting coincides with the equal-weight ACE
-    average; this value populates ``Quality.ece_equal_mass_ace``.
+    Under equal bin masses this coincides with the equal-weight ACE average, so it is what
+    populates ``Quality.ece_equal_mass_ace``.
     """
     return ece(probs, gold, n_bins=n_bins, scheme="equal_mass", weighting="mass")
 
@@ -100,10 +94,7 @@ def ece_sweep(
     bin_counts: tuple[int, ...] = DEFAULT_SWEEP,
     scheme: BinScheme = "equal_width",
 ) -> dict[int, float]:
-    """Map each bin count to its ECE, for the bin-sensitivity sweep.
-
-    The keys and value type match ``Quality.ece_bin_sweep``.
-    """
+    """Map each bin count to its ECE, in the shape ``Quality.ece_bin_sweep`` takes."""
     check_predictions(probs, gold)
     confidence, correct = top_label(probs, gold)
     return {
@@ -114,11 +105,7 @@ def ece_sweep(
 
 @dataclass(frozen=True, slots=True)
 class ReliabilityCurve:
-    """Per-bin reliability-diagram data, empty bins carried as ``np.nan``.
-
-    ``mean_confidence`` and ``accuracy`` are ``np.nan`` where the bin is empty, so
-    a later plotting step drops empty bins rather than drawing them at the origin.
-    """
+    """Per-bin reliability-diagram data."""
 
     edges: FloatArray
     mean_confidence: FloatArray  # np.nan where the bin is empty
@@ -129,11 +116,7 @@ class ReliabilityCurve:
 def reliability_from_confidence(
     confidence: FloatArray, correct: CorrectArray, n_bins: int, scheme: BinScheme
 ) -> ReliabilityCurve:
-    """Reliability-diagram data from the reduced confidence and correctness.
-
-    The confidence-space core of ``reliability_curve``, so a caller that has
-    already reduced the softmax reuses it rather than reducing twice.
-    """
+    """Reliability-diagram data from confidence and correctness already reduced."""
     stats = bin_stats(confidence, correct, n_bins, scheme)
     populated = stats.count > 0
     return ReliabilityCurve(
@@ -153,9 +136,8 @@ def reliability_curve(
 ) -> ReliabilityCurve:
     """Reliability-diagram data for the top-label softmax.
 
-    A separate output from the ECE path: empty bins are carried as ``np.nan`` here
-    rather than zeroed, since plotting needs to distinguish an empty bin from a bin
-    whose accuracy is genuinely zero.
+    Empty bins come back as ``np.nan`` so plotting can tell them from a bin whose accuracy
+    is genuinely zero.
     """
     check_predictions(probs, gold)
     confidence, correct = top_label(probs, gold)

@@ -1,8 +1,5 @@
-"""Proper scores and the Murphy decomposition of the multiclass Brier score.
-
-``brier_score`` is the bin-free headline proper score. ``brier_decomposition``
-splits its binned counterpart into reliability, resolution, and uncertainty summed
-over classes; the three reconstruct the binned Brier exactly.
+"""The bin-free proper scores (NLL, multiclass Brier) and the Murphy decomposition of the
+binned Brier.
 """
 
 from __future__ import annotations
@@ -19,8 +16,8 @@ DEFAULT_BINS = 10
 def nll(probs: ProbMatrix, gold: LabelArray, *, eps: float = 1e-12) -> float:
     """Mean negative log-likelihood of the gold class under the answer softmax.
 
-    The gold-class probability is clipped to ``[eps, 1.0]`` so an all-confident-wrong
-    forecast gives a finite ``-log(eps)`` rather than infinity.
+    The gold-class probability is clipped to ``[eps, 1.0]``, so an all-confident-wrong
+    forecast scores a finite ``-log(eps)``.
     """
     check_predictions(probs, gold)
     gold_prob = probs[np.arange(gold.shape[0]), gold]
@@ -40,9 +37,9 @@ def brier_score(probs: ProbMatrix, gold: LabelArray) -> float:
 class BrierDecomposition:
     """Murphy calibration-refinement decomposition of the binned multiclass Brier.
 
-    ``total == reliability - resolution + uncertainty`` by construction, and equals
-    the Brier computed on the bin-mean forecasts. It equals the raw ``brier_score``
-    when every forecast already equals its bin mean.
+    ``total == reliability - resolution + uncertainty`` by construction; it is the Brier of
+    the bin-mean forecasts, so it meets the raw ``brier_score`` only where each forecast
+    already sits at its bin mean.
     """
 
     reliability: float
@@ -56,14 +53,12 @@ def brier_decomposition(
 ) -> BrierDecomposition:
     """Per-class Murphy decomposition summed over classes.
 
-    For each class ``k`` the forecast ``probs[:, k]`` is treated as the probability
-    of the binary event ``gold == k`` and binned into ``n_bins`` equal-width bins.
-    With ``n_kb`` the bin count, ``f_kb`` the bin-mean forecast, ``o_kb`` the
-    observed class-``k`` frequency in the bin, and ``o_k`` the class base rate:
-
-    - reliability ``= (1/N) sum_k sum_b n_kb (f_kb - o_kb) ** 2``
-    - resolution ``= (1/N) sum_k sum_b n_kb (o_kb - o_k) ** 2``
-    - uncertainty ``= sum_k o_k (1 - o_k)``
+    Class ``k`` is scored as the binary event ``gold == k`` forecast by ``probs[:, k]``,
+    binned into ``n_bins`` equal-width bins. With ``n_kb`` the bin count, ``f_kb`` the
+    bin-mean forecast, ``o_kb`` the observed frequency and ``o_k`` the base rate:
+    reliability is ``(1/N) sum_k sum_b n_kb (f_kb - o_kb)**2``, resolution
+    ``(1/N) sum_k sum_b n_kb (o_kb - o_k)**2``, uncertainty ``sum_k o_k (1 - o_k)`` with
+    no ``1/N``.
     """
     check_predictions(probs, gold)
     n_items, n_classes = probs.shape

@@ -1,6 +1,7 @@
-"""Paired bootstrap: bracketing, shrinking width, and the paired-resampling guard.
+"""Bootstrap intervals, the paired-resampling guard, and the damage gap and ratio.
 
-Small ``n_resamples`` and fixed seeds keep these fast and deterministic.
+A paired resample indexes both arrays with one index vector; the identical-variant tests
+are the regression against independent resampling.
 """
 
 from __future__ import annotations
@@ -248,11 +249,7 @@ def test_damage_ratio_emits_no_degenerate_data_warning() -> None:
 
 
 def test_relative_damages_match_a_closed_form_fixture() -> None:
-    """Both denominators are the reference's own value, pinned without recomputation.
-
-    One occupied bin makes ECE exactly ``|accuracy - confidence|``: the reference sits at
-    |0.80 - 0.90| = 0.10 and the variant at |0.76 - 0.91| = 0.15.
-    """
+    """One occupied bin makes ECE exactly ``|accuracy - confidence|``."""
     reference_confidence = np.full(100, 0.90)
     reference_correct = np.array([True] * 80 + [False] * 20)
     variant_confidence = np.full(100, 0.91)
@@ -295,12 +292,7 @@ def test_damage_ratio_is_usable_when_the_damages_are_both_clearly_signed() -> No
 
 
 def test_damage_ratio_denominator_clause_alone_makes_it_unusable() -> None:
-    """A ratio with no undefined resample is still withheld on an unsigned denominator.
-
-    The variant is made clearly worse-calibrated while its accuracy is moved by twenty
-    items in four thousand, so every resample is defined and the accuracy damage still
-    straddles zero.
-    """
+    """Every resample is defined here, so only the unsigned denominator withholds the ratio."""
     confidence_a, correct_a = make_calibrated_confidence(4000, np.random.default_rng(31))
     confidence_b = np.clip(confidence_a + 0.2, 0.0, 1.0)
     correct_b = correct_a.copy()

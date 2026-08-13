@@ -1,15 +1,8 @@
 """The clock seam and the generation driver: where TTFT and ITL are actually timed.
 
-Two clocks, one trial structure. ``PerfCounterClock`` timestamps with
-``time.perf_counter`` for the synchronous CPU path; ``CudaEventClock`` records CUDA
-events and reads them after a single ``torch.cuda.synchronize`` for the pod. The trial
-structure is identical between them, which is what makes the rig CPU-testable: the
-only thing that changes on the GPU is the clock.
-
-The decode loop keeps every tensor on device (no ``.item()``, ``.cpu()``, or
-``.tolist()`` between steps): a single host sync mid-loop would serialise the queue and
-inflate the fast decode steps. The one synchronize lives in ``CudaEventClock.resolve``,
-outside the loop, and the torch module is injected so bookkeeping is unit-tested on CPU.
+Both clocks share one trial structure, so the clock is the only thing that changes on the
+GPU and the rig stays CPU-testable. The decode loop keeps every tensor on device, since a
+single host sync mid-loop would serialise the queue and inflate the fast decode steps.
 """
 
 from __future__ import annotations
@@ -32,11 +25,7 @@ class TrialClock(Protocol):
 
 
 class PerfCounterClock:
-    """Wall-clock timing via ``time.perf_counter``, for the CPU path.
-
-    CPU ops are synchronous, so a per-mark timestamp is exact and there is no device
-    synchronize to skip. ``resolve`` returns the consecutive differences in milliseconds.
-    """
+    """Wall-clock timing for the CPU path, where ops are synchronous and a timestamp is exact."""
 
     def __init__(self) -> None:
         self._marks: list[float] = []
@@ -52,11 +41,8 @@ class PerfCounterClock:
 class CudaEventClock:
     """CUDA-event timing, the pod-only path.
 
-    ``mark`` creates a fresh ``torch.cuda.Event(enable_timing=True)`` and records it
-    without synchronising, so the decode loop never blocks. ``resolve`` calls
-    ``torch.cuda.synchronize`` exactly once, then reads ``elapsed_time`` for each
-    consecutive event pair. The torch module is injected, so the one-synchronize,
-    N-1-spans bookkeeping is tested on CPU against a stub.
+    ``mark`` records an event without synchronising, so the decode loop never blocks;
+    ``resolve`` synchronises exactly once and then reads each consecutive event pair.
     """
 
     def __init__(self, torch_module: Any) -> None:
@@ -85,13 +71,10 @@ class GenerationDriver(Protocol):
 class HFGenerationDriver:
     """Drives timed decode over an already-loaded HF model and tokenizer.
 
-    Built from ``HFLogitProvider.loaded_model`` so the weights load once for both
-    scoring and timing. Timing is shape-driven, not content-driven: the prefill is a
-    ``(batch_size, context_len)`` tensor of one mid-vocab filler token (never a special
-    token), attention mask all ones. Prefill runs against a fresh
-    ``DynamicCache(config=model.config)``; each decode step feeds the single argmax token
-    back with the mask grown by one. The marks follow the order in the WP4 plan: one
-    before prefill, one after the first token (bounding TTFT), then one per decode step.
+    Built from ``HFLogitProvider.loaded_model`` so the weights load once for both scoring
+    and timing. Timing is shape-driven: the prefill is a ``(batch_size, context_len)``
+    block of one mid-vocab filler token. The first pair of marks bounds TTFT (before
+    prefill, after the first token), then one mark per decode step.
     """
 
     def __init__(self, model: Any, tokenizer: Any, device: str) -> None:
@@ -115,10 +98,8 @@ class HFGenerationDriver:
         cache = transformers.DynamicCache(config=model.config)
         with torch.inference_mode():
             clock.mark()
-            # logits_to_keep=1 keeps only the last position's logits. Without it the
-            # prefill materialises logits for every one of batch*context positions over
-            # the full vocab (~10GB at batch 16 / context 2048 / 152k vocab), which OOMs
-            # a 16GB card; only the last position drives the next token anyway.
+            # logits_to_keep=1: full prefill logits run ~10GB at batch 16 / context 2048,
+            # an OOM on a 16GB card, and only the last position drives the next token.
             output = model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -154,10 +135,8 @@ def collect_trials(
 ) -> list[TrialTiming]:
     """Run ``n_total`` trials (warmup + kept), one ``TrialTiming`` each.
 
-    Per trial: a fresh clock, one ``driver.run_trial``, then ``spans = clock.resolve()``
-    where ``spans[0]`` is the TTFT and ``spans[1:]`` are the per-token ITL samples.
-    Raises ``ValueError`` if a trial yields fewer than two spans, since ``decode_len``
-    must be at least 2 for there to be one ITL sample.
+    Each trial gets a fresh clock, whose ``spans[0]`` is the TTFT and ``spans[1:]`` the
+    per-token ITL samples, so ``decode_len`` must be at least 2 for one ITL sample.
     """
     trials: list[TrialTiming] = []
     for _ in range(n_total):

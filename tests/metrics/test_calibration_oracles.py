@@ -1,14 +1,8 @@
 """Oracle cross-checks: our ECE family against torchmetrics, netcal, and sklearn.
 
-Each oracle is guarded by ``pytest.importorskip`` so the base environment stays
-green without the ``oracles`` group. The oracle handles come back through
-``importorskip`` (typed ``Any``) rather than a top-level import, so neither the
-missing package nor its absent type stubs break collection or mypy.
-
-The fixture uses gold correlated with the softmax (a genuine reliability curve), so
-the matched-setting agreement is tight and the ECE is bin-sensitive enough for the
-final sensitivity guard to mean something. Confidences are continuous and never
-exactly 1.0, so our left-closed binning agrees with torchmetrics everywhere.
+Oracle handles come from ``pytest.importorskip``, so an absent package and its absent
+stubs stay out of both collection and mypy. Fixture confidences never reach exactly 1.0,
+so our left-closed binning agrees with torchmetrics everywhere.
 """
 
 from __future__ import annotations

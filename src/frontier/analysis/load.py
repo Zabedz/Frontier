@@ -1,11 +1,7 @@
-"""Read the result store into a tidy per-variant frame and join the sidecars.
+"""Read the result store into a tidy per-variant frame and join the prediction sidecars.
 
-``load_tidy`` flattens one stored ``ResultRow`` per row (per seed) into the identity,
-quality, and cost columns the two figures read, parsing the latency and memory JSON
-columns that ``io/serialize.py`` writes. ``collapse_seeds`` reduces the training arms'
-multiple seeds to one display point per variant. The sidecar joins reconstruct each
-row's predictions key from its stored ``config_hash``/``seed``/``task_name`` and pool
-the per-item arrays for the calibration figures.
+A sidecar is found by rebuilding its key from the row's ``config_hash``, ``seed``, and
+``task_name``.
 """
 
 from __future__ import annotations
@@ -36,10 +32,9 @@ COST_INV_TOKENS = 1000.0
 class XAxisSpec:
     """A cost axis for the frontier chart. All three minimize (lower is better).
 
-    ``cross_track`` records whether the axis is comparable across the two inference
-    tracks (the fairness rule in ``docs/architecture.md``). Memory is; latency and the
-    throughput-derived cost proxy embed a per-backend clock and are not, so drawing them
-    across tracks in one column mixes a llama.cpp number with a vLLM/HF one.
+    ``cross_track``: comparable across the two inference tracks (the fairness rule in
+    ``docs/architecture.md``). Memory qualifies; latency and the throughput-derived proxy
+    embed a per-backend clock, so one column of them mixes llama.cpp with vLLM/HF.
     """
 
     key: XCost
@@ -114,12 +109,11 @@ def load_tidy(
 ) -> pd.DataFrame:
     """Read the store into one tidy row per stored ``ResultRow`` (per seed).
 
-    The latency and memory JSON columns are parsed to the cost columns at
-    ``batch_size`` and ``(batch_size, context_len)``; ``context_len`` ``None`` selects
-    the smallest stored context. A skipped latency/memory profile leaves those columns
-    ``NaN``, which the Pareto step drops. ``cost_inv`` is ``1000 / tok_s_per_gb`` (so
-    lower is better like the others). ``task_name`` ``None`` keeps every task; otherwise
-    the frame is filtered to it.
+    ``context_len`` of ``None`` picks the smallest stored context, ``task_name`` of
+    ``None`` keeps every task. ``batch_size`` picks the stored latency and memory entry; a
+    size the run never profiled leaves those columns ``NaN`` too, as does a skipped
+    profile, and the Pareto step drops them. ``cost_inv`` is ``1000 / tok_s_per_gb``, so it
+    minimizes like the other cost axes.
     """
     frame = read_frame(store)
     rows: list[dict[str, Any]] = []
@@ -160,10 +154,8 @@ def load_tidy(
 def collapse_seeds(tidy: pd.DataFrame) -> pd.DataFrame:
     """One row per ``(variant_name, task_name)``: mean the numeric columns across seeds.
 
-    ``n_seeds`` records the seed count. The CI columns become the mean of the per-seed
-    intervals, a display interval; a rigorous multi-seed CI (seed variance plus the
-    bootstrap) is a later refinement once real multi-seed rows exist. Family, track,
-    and the first seed's config hash are carried for colour and keying.
+    The CI columns average the per-seed intervals, which is a display interval; a
+    multi-seed CI (seed variance plus the bootstrap) waits for real multi-seed rows.
     """
     if tidy.empty:
         empty = tidy.copy()
@@ -182,16 +174,13 @@ def load_predictions_for_variant(
 ) -> PredictionRows:
     """Pool every matching seed's sidecar for one variant into one ``PredictionRows``.
 
-    More items give stabler bins; concatenation is order-independent for ECE and
-    reliability, so the seeds need no weighting. The pool is one variant scored one way,
-    which is what a single ``config_hash`` means: the hash covers the merged config, so a
-    smoke row, a re-run after a config edit, or a second eval profile lands under its own
-    hash and is refused here. Pooling those would raise the item count while the paired
-    guards downstream stayed satisfied, since a doubled group still matches item for item
-    against another doubled group.
+    Concatenation is order-independent for ECE and reliability, so the seeds need no
+    weighting. A group spanning more than one ``config_hash`` is refused: pooling runs
+    scored differently would raise the item count while the paired guards downstream
+    stayed satisfied, a doubled group matching item for item against another doubled one.
 
-    Raises ``ValueError`` if the tidy frame has no such variant/task, if the group spans
-    more than one config hash, or if no sidecar file is found for it.
+    Raises ``ValueError`` for a missing variant/task, a group spanning several config
+    hashes, or a missing sidecar.
     """
     subset = tidy[(tidy["variant_name"] == variant_name) & (tidy["task_name"] == task_name)]
     if subset.empty:
@@ -216,11 +205,9 @@ def load_predictions_for_variant(
 def load_all_predictions(tidy: pd.DataFrame, *, root: Path) -> dict[str, PredictionRows]:
     """Map a variant label to its pooled ``PredictionRows`` for the gallery and sweep.
 
-    The label is the bare ``variant_name`` when the frame holds a single task, and
-    ``"variant / task"`` when it spans more than one, so a variant scored on two tasks
-    keeps two distinct entries instead of the second silently overwriting the first.
-    Variants whose sidecars are absent (a store predating the sidecar) are skipped, so
-    the figures degrade gracefully rather than failing whole.
+    The label takes a ``" / task"`` suffix once the frame spans more than one task, so a
+    variant scored on two tasks keeps two entries. Variants whose sidecars are absent (a
+    store predating the sidecar) are skipped, so the figures degrade gracefully.
     """
     multi = _spans_multiple_tasks(tidy)
     result: dict[str, PredictionRows] = {}
@@ -236,8 +223,8 @@ def load_all_predictions(tidy: pd.DataFrame, *, root: Path) -> dict[str, Predict
 def prediction_labels(tidy: pd.DataFrame) -> list[str]:
     """Every label ``load_all_predictions`` would emit if all sidecars were present.
 
-    The caller diffs this against the returned mapping to name the variants dropped for
-    want of a sidecar, rather than omitting them silently.
+    The caller diffs this against that mapping to name the variants dropped for want of
+    a sidecar.
     """
     multi = _spans_multiple_tasks(tidy)
     labels: list[str] = []

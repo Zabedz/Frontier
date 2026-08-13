@@ -1,14 +1,8 @@
 """nvidia-smi capture, CSV parse, the clock-lock probe, and the no-GPU degradation.
 
-A latency number is only defensible with the clock and thermal state it was measured
-under. On RunPod the clocks usually cannot be locked (the container lacks the
-privilege), so the fallback the methodology requires is to log ``clocks.sm``,
-``clocks.mem``, ``temperature.gpu``, and ``power.draw`` around every measurement and
-flag a run whose clocks drifted. Every path here degrades to a well-defined no-GPU
-``MachineState`` when nvidia-smi is absent, which is the row a laptop carries.
-
-The subprocess runner is injected the way ``io.provenance`` injects its git runner, so
-the parse and the failure branches are unit-tested without a GPU.
+An unprivileged RunPod container cannot lock the clocks, so the methodology's fallback is
+to log the clock and thermal state around every measurement and flag a drifted run. Every
+path here degrades to the no-GPU ``MachineState`` a laptop row carries.
 """
 
 from __future__ import annotations
@@ -60,12 +54,9 @@ class NvidiaSmiProbe:
 def parse_nvidia_smi_csv(text: str) -> ClockReading:
     """Parse one line of ``--query-gpu=... --format=csv,noheader,nounits``.
 
-    Takes the first non-empty line (single-GPU target; extra GPU lines are ignored) and
-    splits on commas. Clocks and temperature go through ``int(float(x))`` so ``"1500.00"``
-    parses; power through ``float``. A field that is ``"[N/A]"`` or ``"N/A"`` (power can be
-    N/A on some cards) becomes ``0`` for that field while ``present`` stays ``True``: the
-    binary ran and one field was unavailable. A line with no parseable number in any field
-    returns ``no_gpu``.
+    Reads the first non-empty line only, so a second GPU's line is ignored. An ``N/A``
+    field (power, on some cards) becomes ``0`` with ``present`` still ``True``, since the
+    binary did run; a line with no parseable number in any field returns ``no_gpu``.
     """
     line = next((candidate for candidate in text.splitlines() if candidate.strip()), "")
     fields = [field.strip() for field in line.split(",")]
@@ -81,12 +72,7 @@ def parse_nvidia_smi_csv(text: str) -> ClockReading:
 
 
 def query_nvidia_smi(*, run: SmiRunner | None = None) -> ClockReading:
-    """Shell out and parse, degrading to ``no_gpu`` when nvidia-smi is absent or errors.
-
-    The default runner wraps ``subprocess.run(..., check=True, capture_output=True,
-    text=True)``. ``FileNotFoundError`` (no binary, the laptop case) and
-    ``CalledProcessError`` are caught and return ``no_gpu``; nothing else is swallowed.
-    """
+    """Shell out and parse, degrading to ``no_gpu`` when nvidia-smi is absent or errors."""
     execute = run or _run_smi
     try:
         output = execute(["nvidia-smi", _QUERY_GPU_ARG, _CSV_FORMAT])
@@ -96,17 +82,12 @@ def query_nvidia_smi(*, run: SmiRunner | None = None) -> ClockReading:
 
 
 def probe_clock_lock(*, run: SmiRunner | None = None) -> bool:
-    """Try to enable persistence mode and lock the GPU and memory clocks to their max.
+    """Enable persistence mode and pin the clocks to max; ``True`` if every step exits 0.
 
-    Returns ``True`` only if every step exits 0. On RunPod the expected result is
-    ``False``: ``-pm 1`` already fails with "Insufficient Permissions" in an
-    unprivileged container, and a missing binary is likewise ``False``. The caught
-    failures are ``FileNotFoundError`` and ``CalledProcessError`` only.
-
-    Side effect: the success path mutates shared host state (persistence mode on, SM
-    and memory clocks pinned), and that change outlives the process. If this ever
-    returns ``True`` on a pod, record it in SSH_CHANGELOG.md and reset the clocks
-    afterwards (``nvidia-smi -rgc -rmc``, ``nvidia-smi -pm 0``).
+    On RunPod the result is ``False``: ``-pm 1`` fails with "Insufficient Permissions" in
+    an unprivileged container. A ``True`` has mutated host state that outlives the process,
+    so record it in SSH_CHANGELOG.md and reset with ``nvidia-smi -rgc -rmc`` and
+    ``nvidia-smi -pm 0``.
     """
     execute = run or _run_smi
     try:
@@ -128,12 +109,10 @@ def to_machine_state(
 ) -> MachineState:
     """Assemble a ``schema.MachineState`` from a before/after clock pair.
 
-    The reported clocks, temperature, and power come from ``after`` (steady state at the
-    end of the batch's trials). ``clock_drift_flag`` is ``True`` when the SM or memory
-    clock moved by more than ``drift_tol_mhz`` between the two readings, so a run whose
-    clocks shifted is flagged rather than silently trusted: two variants are only
-    comparable under the same logged clock state. If either reading is not ``present`` the
-    result is the well-defined no-GPU state that a laptop row carries.
+    The reported values come from ``after``, the steady state at the end of the batch's
+    trials. ``clock_drift_flag`` marks an SM or memory clock that moved by more than
+    ``drift_tol_mhz`` between the two readings, since two variants only compare under the
+    same logged clock state. Either reading absent gives the no-GPU state.
     """
     if not (before.present and after.present):
         return MachineState(0, 0, 0, 0.0, clocks_locked=False, clock_drift_flag=False)

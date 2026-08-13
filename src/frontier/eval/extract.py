@@ -1,17 +1,8 @@
-"""Confidence extraction: cyclic scoring, PriDe debiasing, and the metrics-ready
-outputs.
+"""Confidence extraction: cyclic scoring, PriDe debiasing, and the metrics-ready outputs.
 
-Each item is scored under the cyclic option-order permutations, the model's
-per-letter-position prior is removed, and the result is reduced to a debiased
-per-option distribution in the item's canonical order. That distribution, the
-predicted option, and the gold option are exactly the ``ProbMatrix`` / gold shape
-``frontier.metrics`` reads, so the two packages agree by construction.
-
-Why full cyclic scoring is self-debiasing: across the ``n`` shifts each content
-visits every letter position exactly once, so if the letter bias is an additive
-per-position term in log space (the PriDe assumption) it contributes the same
-constant to every content's aggregate score and drops out of the softmax. The prior
-is still estimated separately, only to report the bias magnitude.
+Cyclic scoring is self-debiasing: each content visits every letter position exactly once, so
+an additive per-position letter bias (the PriDe assumption) drops out of the softmax. The
+prior is estimated separately only to report the bias magnitude.
 """
 
 from __future__ import annotations
@@ -39,11 +30,10 @@ DEFAULT_EPS = 1e-12
 
 @dataclass(frozen=True, slots=True)
 class PermutationRobustness:
-    """The in-flight permutation-sensitivity record, before the schema reduction.
+    """In-flight permutation sensitivity, before the reduction to ``schema.Robustness``.
 
-    ``letter_prior`` is the per-letter-position prior averaged over the items sharing
-    the modal option count; the scalar fields reduce into ``schema.Robustness`` for
-    the result row. ``letter_prior`` is carried here for the plotting step.
+    ``letter_prior`` is averaged over the items sharing the modal option count and is carried
+    for the plotting step.
     """
 
     letter_prior: FloatArray
@@ -56,12 +46,9 @@ class PermutationRobustness:
 class EvalOutputs:
     """Per-item arrays shaped to feed ``frontier.metrics``, plus the robustness record.
 
-    ``probs`` is zero-padded to the widest option count in the scored set so it is a
-    rectangular ``ProbMatrix``; every real row sums to 1 over its own options and the
-    padded columns are structural zeros. ``predicted`` and ``gold`` are always below
-    the item's true option count, so the padding never touches an argmax and never
-    distorts ECE, Brier, or NLL (a padded column is a 0.0 forecast for an event that
-    never fires).
+    ``probs`` is zero-padded to the widest option count in the scored set; ``predicted`` and
+    ``gold`` always fall below an item's own count, so the padding reaches no argmax and no
+    metric (a padded column is a 0.0 forecast for an event that never fires).
     """
 
     probs: ProbMatrix  # (n_items, max_options)
@@ -73,8 +60,7 @@ class EvalOutputs:
 
 
 def _cyclic_display(options: tuple[str, ...], shift: int) -> tuple[str, ...]:
-    """The options as shown under cyclic shift ``k``: position ``p`` holds content
-    ``(p - k) mod n``, so content ``j`` sits at letter position ``(j + k) mod n``."""
+    """Options under cyclic shift ``k``: content ``j`` sits at letter position ``(j + k) % n``."""
     n = len(options)
     return tuple(options[(position - shift) % n] for position in range(n))
 
@@ -84,9 +70,9 @@ def _score_cyclic(
 ) -> tuple[FloatArray, FloatArray, float, bool]:
     """Score one item under all cyclic orders.
 
-    Returns the debiased canonical-order distribution, the estimated per-position
-    prior, the fraction of orders whose raw answer matched the debiased answer, and
-    whether the naive canonical-order answer differs from the debiased answer.
+    Returns the debiased canonical-order distribution, the estimated per-position prior, the
+    fraction of orders whose raw answer matched the debiased one, and whether the naive
+    canonical-order answer differs from it.
     """
     n = len(record.options)
     prompts = [
@@ -101,7 +87,7 @@ def _score_cyclic(
     shifts = np.arange(n)
     contents = np.arange(n)
     positions = (shifts[np.newaxis, :] + contents[:, np.newaxis]) % n  # positions[j, k] = (j+k)%n
-    per_content = log_q[shifts[np.newaxis, :], positions].mean(axis=1)  # s_j
+    per_content = log_q[shifts[np.newaxis, :], positions].mean(axis=1)
     debiased = softmax(per_content)
     prior = softmax(log_q.mean(axis=0))
 
@@ -146,9 +132,7 @@ def score_items(
 ) -> EvalOutputs:
     """Score every record and assemble the metrics-ready outputs.
 
-    With ``scheme="cyclic"`` each item is scored under its ``n`` cyclic orders and
-    debiased; with ``scheme="none"`` only the canonical order is scored and
-    ``robustness`` is ``None``.
+    ``scheme="none"`` scores only the canonical order and leaves ``robustness`` as ``None``.
     """
     if not records:
         raise ValueError("score_items received no records")
@@ -216,11 +200,9 @@ def to_task_spec(spec: EvalSpec, num_items: int) -> TaskSpec:
 
 
 def to_robustness(robustness: PermutationRobustness | None) -> Robustness | None:
-    """Reduce the in-flight ``PermutationRobustness`` onto the ``schema.Robustness`` row.
+    """Reduce the in-flight record onto the ``schema.Robustness`` row; ``None`` passes through.
 
-    ``None`` passes through unchanged (the ``scheme="none"`` case). The per-position
-    ``letter_prior`` array stays in the in-flight record; only the scalar headline
-    numbers land on the row.
+    Only the scalars land on the row; the per-position ``letter_prior`` stays in flight.
     """
     if robustness is None:
         return None

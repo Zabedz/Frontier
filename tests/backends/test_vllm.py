@@ -1,10 +1,6 @@
 """The vLLM extraction, driven by a fake engine and tokenizer on CPU.
 
-Proves the correctness backbone: the provider reads only the resolved letter ids out of
-the full-vocab logprob dict, the candidate softmax equals softmax of the injected
-candidate logprobs, and that softmax is invariant to a shared additive constant added to
-every returned logprob (which is why full-vocab and subset-masked logprobs are
-equivalent). It also pins the SamplingParams the provider passes.
+Candidate softmax ignores a shared additive constant, so full-vocab and masked logprobs agree.
 """
 
 from __future__ import annotations
@@ -21,8 +17,7 @@ from frontier.eval.provider import letter_probs, softmax
 
 VOCAB = 200
 LETTER_IDS = {" A": 10, " B": 11, " C": 12, " D": 13}
-# Two non-letter ids that are present in the returned dict at a competitive rank; the
-# provider must ignore them, because only the letters carry the answer signal.
+# Non-letter ids at a competitive rank, which the provider must ignore.
 DISTRACTOR_IDS = {5: -8.0, 99: -0.2}
 CANDIDATE_LOGPROBS = {10: -1.0, 11: -2.0, 12: -0.5, 13: -3.0}
 

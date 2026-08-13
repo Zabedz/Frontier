@@ -1,9 +1,7 @@
 """The normalised multiple-choice record and the shared array dtypes.
 
-The npt aliases name the shapes the eval core passes to ``frontier.metrics``; they
-are the same dtypes WP1 uses, so the arrays hand across without a copy or a cast.
-They are declared here rather than reached out of the private ``frontier.metrics``
-array module, so the two packages stay decoupled.
+The aliases match the dtypes ``frontier.metrics`` uses, so arrays hand across without a copy
+or a cast; they are declared here to keep the two packages decoupled.
 """
 
 from __future__ import annotations
@@ -28,10 +26,9 @@ MAX_OPTIONS = len(LETTERS)
 class EvalRecord:
     """One normalised multiple-choice item, dataset-agnostic.
 
-    ``gold`` indexes ``options`` in the record's canonical order (never permuted).
-    ``error_type`` and ``redux_gold`` are populated only by the MMLU-Redux loader;
-    ``redux_gold`` is the de-noised label, or ``None`` when the policy drops the item
-    from the de-noised set. Every other loader leaves them ``None``.
+    ``gold`` indexes ``options`` in the record's canonical order, which is never permuted.
+    ``error_type`` and ``redux_gold`` are populated only by the MMLU-Redux loader, where
+    ``redux_gold`` is ``None`` for an item the policy drops.
     """
 
     qid: str
@@ -45,11 +42,7 @@ class EvalRecord:
 
 
 def letters_for(n_options: int) -> str:
-    """The first ``n_options`` answer letters, e.g. 4 -> ``"ABCD"``.
-
-    Raises ``ValueError`` if ``n_options`` is below 2 (not a choice) or above 26 (no
-    single letter left), naming the offending count.
-    """
+    """The first ``n_options`` answer letters, e.g. 4 -> ``"ABCD"``; 2..26 only."""
     if n_options < MIN_OPTIONS:
         raise ValueError(
             f"n_options must be >= {MIN_OPTIONS} for a multiple-choice item, got {n_options}"

@@ -1,11 +1,5 @@
-"""The bitsandbytes weight-dtype mapping, a pure function of the config.
-
-``weight_dtype`` in a Track-A config is either a torch dtype name (``fp16``, ``bf16``)
-or a bitsandbytes quantisation scheme (``nf4``, ``int8``). This module is the single
-place that knows which strings mean bitsandbytes and what ``BitsAndBytesConfig`` kwargs
-each one wants. It builds a plain dict, so the mapping is unit-tested on CPU without
-importing transformers or bitsandbytes; ``backends.hf`` turns the dict into a real
-``BitsAndBytesConfig`` on the CUDA load path.
+"""The bitsandbytes weight-dtype mapping. It builds plain ``BitsAndBytesConfig`` kwargs, so
+the mapping is unit-tested on CPU without importing transformers or bitsandbytes.
 """
 
 from __future__ import annotations
@@ -14,25 +8,18 @@ from typing import Any
 
 BNB_WEIGHT_DTYPES = frozenset({"nf4", "int8"})
 
-# bf16 is the Qwen family's native compute dtype, so the NF4 dequant-then-matmul path
-# and the LLM.int8 fp path both run in bf16. Named once here so the choice is not a
-# magic string spread across the load code.
+# bf16 is the Qwen family's native compute dtype, and both bnb schemes keep an fp/bf16
+# activation path (NF4 dequantises to it, LLM.int8 mixes an fp16 outlier path).
 BNB_COMPUTE_DTYPE = "bfloat16"
 
 
 def is_bnb_dtype(weight_dtype: str) -> bool:
-    """True when ``weight_dtype`` names a bitsandbytes quantisation, not a torch dtype."""
+    """True when ``weight_dtype`` names a bitsandbytes quantisation."""
     return weight_dtype in BNB_WEIGHT_DTYPES
 
 
 def resolve_bnb_compute_dtype(weight_dtype: str) -> str:
-    """The torch dtype name bitsandbytes runs the activation path in for this scheme.
-
-    Both bnb schemes keep an fp/bf16 activation path (NF4 dequantises to it, LLM.int8
-    mixes an fp16 outlier path), so the compute dtype is ``bfloat16`` for the Qwen
-    family regardless of the scheme. Raises ``ValueError`` for a non-bnb dtype, so the
-    bnb load branch cannot be reached with an ordinary torch dtype by mistake.
-    """
+    """The torch dtype name bitsandbytes runs this scheme's activation path in."""
     if not is_bnb_dtype(weight_dtype):
         raise ValueError(f"weight_dtype {weight_dtype!r} is not a bitsandbytes dtype")
     return BNB_COMPUTE_DTYPE
@@ -41,11 +28,8 @@ def resolve_bnb_compute_dtype(weight_dtype: str) -> str:
 def bnb_config_kwargs(weight_dtype: str, *, compute_dtype: str) -> dict[str, Any]:
     """The ``BitsAndBytesConfig`` kwargs for a bnb ``weight_dtype``.
 
-    ``nf4`` maps to 4-bit NF4 with double quantisation and the given fp/bf16 compute
-    dtype; ``int8`` maps to LLM.int8 weight-only (the compute dtype does not apply). The
-    ``compute_dtype`` here is a torch dtype *name*; the CUDA caller resolves it to a real
-    ``torch`` dtype when constructing ``BitsAndBytesConfig``. Raises ``ValueError`` for a
-    non-bnb dtype so a wiring mistake fails loudly rather than loading unquantised.
+    ``nf4`` is 4-bit NF4 with double quantisation; ``int8`` is LLM.int8 weight-only, which
+    takes no compute dtype. ``compute_dtype`` is a torch dtype name the CUDA caller resolves.
     """
     if weight_dtype == "nf4":
         return {

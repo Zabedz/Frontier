@@ -1,7 +1,6 @@
 """The full config -> score -> metrics -> assemble -> store chain, offline.
 
-A synthetic provider and in-memory records drive the runner with no model and no
-network, proving the wiring the live smoke test exercises with a real model.
+A synthetic provider and in-memory records drive the runner with no model and no network.
 """
 
 from __future__ import annotations
@@ -35,8 +34,7 @@ _LETTER_INDEX = {letter: i for i, letter in enumerate(LETTERS)}
 class _SyntheticProvider:
     """Favours the gold option, which each record marks in its option text.
 
-    Carries ``backend_version`` so ``_build_backend`` reads a real value off the
-    provider, exactly as the HF backend supplies it.
+    ``backend_version`` is present so ``_build_backend`` reads it off the provider.
     """
 
     backend_version = "synthetic-1.0"
@@ -64,7 +62,7 @@ def _canned_latency(
     device: str,  # noqa: ARG001
     mode: RunMode,  # noqa: ARG001
 ) -> LatencyMemory:
-    """A model-free, network-free stand-in for the real latency rig."""
+    """A model-free stand-in for the real latency rig."""
     machine = MachineState(
         gpu_clock_sm_mhz=CANNED_SM_MHZ,
         gpu_clock_mem_mhz=6000,
@@ -164,8 +162,7 @@ def test_synthetic_runner_emits_one_valid_row(tmp_path: Path) -> None:
     preds = read_predictions(tmp_path, key)
     assert preds.confidence.shape[0] == N_ITEMS
     assert bool(((preds.confidence >= 0.0) & (preds.confidence <= 1.0)).all())
-    # ``correct`` is exactly ``exact_match(predicted, gold)``, so it reconstructs off
-    # the self-describing sidecar columns.
+    # ``correct`` is ``exact_match(predicted, gold)``, rebuildable from the sidecar columns.
     assert np.array_equal(preds.correct, preds.predicted == preds.gold)
 
 

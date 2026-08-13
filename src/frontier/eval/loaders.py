@@ -1,14 +1,8 @@
-"""Row normalisers, the MMLU-Redux de-noise policy, and the thin HF loaders.
+"""Row normalisers, the MMLU-Redux de-noise policy, and the thin Hugging Face loaders.
 
-The logic lives in pure row normalisers, unit-tested on inline dict fixtures with no
-network. The Hugging Face fetch is a thin shell that maps a normaliser over
-``datasets.load_dataset`` rows and is exercised only by a slow, env-gated live test.
-
-``datasets`` >= 4.0 removed the Python dataset-loading scripts, so ``load_dataset``
-reads the parquet each target repo already publishes and no ``trust_remote_code``
-kwarg is passed (it is gone). If a native load ever fails because a repo carries only
-a script, the fallback is ``revision="refs/convert/parquet"`` (the auto-converted
-parquet branch); it is not built for speculatively.
+``datasets`` >= 4.0 removed the loading scripts, so these read each repo's published parquet
+and pass no ``trust_remote_code``; a script-only repo would need the auto-converted branch,
+``revision="refs/convert/parquet"``.
 """
 
 from __future__ import annotations
@@ -51,11 +45,7 @@ def _as_str_tuple(value: object) -> tuple[str, ...]:
 
 
 def normalize_mmlu_row(row: Mapping[str, object], *, index: int, split: str) -> EvalRecord:
-    """A ``cais/mmlu`` ``all`` row to an ``EvalRecord``.
-
-    ``options`` is the four choices, ``gold`` is ``answer``, ``subject`` is the row
-    subject, and ``qid`` is ``f"{subject}:{split}:{index}"``.
-    """
+    """A ``cais/mmlu`` ``all`` row to an ``EvalRecord``, with ``qid`` as ``subject:split:index``."""
     subject = str(row["subject"])
     return EvalRecord(
         qid=f"{subject}:{split}:{index}",
@@ -68,13 +58,10 @@ def normalize_mmlu_row(row: Mapping[str, object], *, index: int, split: str) -> 
 
 
 def normalize_arc_row(row: Mapping[str, object], *, split: str) -> EvalRecord:
-    """An ``ai2_arc`` ARC-Challenge row to an ``EvalRecord``, resolving gold positionally.
+    """An ``ai2_arc`` ARC-Challenge row to an ``EvalRecord``, with gold resolved positionally.
 
-    ``gold`` is ``labels.index(answerKey)``, which handles both the letter labels
-    ``['A','B','C','D']`` and the numeric labels ``['1','2','3','4']``, and any 3- or
-    5-option item, because the scorer re-letters by position. Raises ``ValueError``
-    naming the qid if ``answerKey`` is not among the labels, or if the label and text
-    lists differ in length.
+    ``labels.index(answerKey)`` covers the letter and numeric label sets alike, and any 3- or
+    5-option item, since the scorer re-letters by position.
     """
     qid = str(row["id"])
     choices = row["choices"]
@@ -100,11 +87,9 @@ def normalize_arc_row(row: Mapping[str, object], *, split: str) -> EvalRecord:
 def parse_correct_answer(value: str, options: Sequence[str]) -> int | None:
     """Map an MMLU-Redux ``correct_answer`` string to an option index, or ``None``.
 
-    Tried in order, first match wins: a lone letter A..Z (index ``ord - ord('A')``);
-    a lone digit 1..n (index ``digit - 1``); an exact case-insensitive, whitespace-
-    stripped match against an option string. Anything else, or an index out of range,
-    returns ``None`` so the item is dropped rather than mislabelled. Defensive by
-    design, because the field's encoding is not uniform across the corpus.
+    The field's encoding varies across the corpus, so three forms are tried in order: a lone
+    letter, a lone 1-based digit, then a case-insensitive match against an option string. An
+    unreadable value or an out-of-range index returns ``None``, and the item is dropped.
     """
     stripped = value.strip()
     if len(stripped) == 1 and stripped.isalpha():
@@ -130,10 +115,9 @@ def resolve_redux_gold(
 ) -> int | None:
     """The de-noised gold for one MMLU-Redux item, or ``None`` to drop it.
 
-    An ``ok`` item keeps its raw gold under both policies. ``clean_subset`` drops
-    every non-ok item. ``relabel`` re-labels ``wrong_groundtruth`` from
-    ``correct_answer`` (which may still return ``None``) and drops the
-    ``REDUX_DROP_ALWAYS`` types; any unrecognised error type is dropped.
+    An ``ok`` item keeps its raw gold under either policy. ``clean_subset`` drops every other
+    item; ``relabel`` re-labels ``wrong_groundtruth`` from ``correct_answer`` and drops the
+    rest, including any unrecognised error type.
     """
     if error_type == "ok":
         return raw_gold
@@ -149,8 +133,8 @@ def normalize_redux_row(
 ) -> EvalRecord:
     """An ``mmlu-redux-2.0`` row to an ``EvalRecord`` carrying both golds.
 
-    ``gold`` is the original MMLU label; ``redux_gold`` is the de-noised label (or
-    ``None``), so the pipeline can report raw-vs-redux sensitivity from one record.
+    ``gold`` stays the original MMLU label and ``redux_gold`` holds the de-noised one, so one
+    record supports the raw-vs-redux comparison.
     """
     options = _as_str_tuple(row["choices"])
     raw_gold = _as_int(row["answer"])
@@ -172,11 +156,11 @@ def normalize_redux_row(
 def redux_gold_arrays(
     records: Sequence[EvalRecord],
 ) -> tuple[LabelArray, LabelArray, npt.NDArray[np.bool_]]:
-    """Return ``(raw_gold, redux_gold_on_kept, keep_mask)``.
+    """Return ``(raw_gold, redux_gold_on_kept, keep_mask)`` for the raw-vs-redux comparison.
 
-    The pipeline computes raw ECE on the full redux pool, redux ECE on the kept
-    items, and a matched-pool delta on the kept items (same items, label flip only).
-    This supplies the arrays, not the delta (that reduction is WP1 plus the pipeline).
+    ``redux_gold_on_kept`` is already filtered by ``keep_mask``, so it is the shorter array
+    and pairing it with ``raw_gold`` needs the mask applied first. The delta is taken on the
+    kept items alone, so it isolates the label flip from the item drop.
     """
     raw_gold = np.asarray([record.gold for record in records], dtype=np.intp)
     keep_mask = np.asarray([record.redux_gold is not None for record in records], dtype=np.bool_)
@@ -245,10 +229,8 @@ def load_mmlu_redux(
 ) -> list[EvalRecord]:
     """Load ``edinburgh-dawg/mmlu-redux-2.0`` across its subject configs and concatenate.
 
-    The repo has no ``all`` config, so the subject configs are iterated and their
-    ``test`` splits concatenated. ``clean_subset`` (the default) keeps only ``ok``
-    items and never touches ``correct_answer``; ``relabel`` also re-labels
-    ``wrong_groundtruth`` items (see the loader docstrings).
+    The repo has no ``all`` config, so the subject configs are iterated and their ``test``
+    splits concatenated. ``policy`` is applied per row by ``resolve_redux_gold``.
     """
     load = loader or _load_split
     resolve_names = config_names or _config_names
@@ -271,11 +253,10 @@ TASK_LOADERS: dict[str, Callable[..., list[EvalRecord]]] = {
 def subsample(
     records: Sequence[EvalRecord], size: int, *, seed: int, stratify_by: str = "subject"
 ) -> list[EvalRecord]:
-    """Deterministic stratified subsample by subject with proportional allocation.
+    """Deterministic stratified subsample by subject, with proportional allocation.
 
-    A seeded numpy ``Generator`` chooses within each stratum; the leftover from
-    rounding the proportional counts goes to the largest fractional parts. ``size >=
-    len(records)`` returns all records, in their original order.
+    Rounding leftovers go to the largest fractional parts. ``size >= len(records)`` returns
+    every record, in the original order.
     """
     n = len(records)
     if size >= n:

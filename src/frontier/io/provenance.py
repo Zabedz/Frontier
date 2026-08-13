@@ -1,9 +1,8 @@
-"""Provenance stamping: git SHA, hardware identity, timestamp, and the assembly.
+"""Provenance stamping: git SHA, hardware identity, timestamp, and the assembled record.
 
-Every value that varies with the machine or the moment is either injected or read
-through a narrow, overridable seam, so ``stamp_provenance`` is deterministic and the
-runner's smoke and provenance tests pin exact fields. The GPU branch of
-``hardware_info`` runs on the pod, not in CPU CI.
+Values that vary with the machine or the moment come in through overridable seams, so
+``stamp_provenance`` is deterministic and the tests pin exact fields. The GPU branch of
+``hardware_info`` is exercised on the pod.
 """
 
 from __future__ import annotations
@@ -36,10 +35,7 @@ def _run_git(command: Sequence[str]) -> str:
 def read_git_sha(*, run: GitRunner | None = None) -> str:
     """The current commit, with a ``"-dirty"`` suffix when the tree has changes.
 
-    Runs ``git rev-parse HEAD`` and ``git status --porcelain`` through ``run``
-    (injectable; defaults to a ``subprocess.run`` wrapper). A checkout with no ``.git``
-    (non-zero exit or ``FileNotFoundError``) returns ``"nogit"`` rather than raising, so
-    a row still produces; the caught failure is narrow, not a blanket except.
+    A checkout with no ``.git`` returns ``"nogit"``, so a row still produces.
     """
     execute = run or _run_git
     try:
@@ -53,9 +49,8 @@ def read_git_sha(*, run: GitRunner | None = None) -> str:
 def hardware_info(*, device: str) -> HardwareInfo:
     """Hardware identity for the row.
 
-    On ``cpu`` the driver and CUDA versions are the project's ``"none"`` sentinel (the
-    schema fields are non-optional ``str``). On ``cuda`` the id and versions come from
-    ``torch`` and ``nvidia-smi``; that branch is exercised on the pod.
+    On ``cpu`` the driver and CUDA versions are the ``"none"`` sentinel, since the schema
+    fields are non-optional ``str``.
     """
     if device == "cpu":
         return HardwareInfo(
@@ -101,11 +96,7 @@ def stamp_provenance(
     git_sha: str,
     timestamp: str,
 ) -> Provenance:
-    """Assemble a ``schema.Provenance`` from fully-supplied inputs.
-
-    Every value is passed in, so the function is deterministic and unit-testable; the
-    runner supplies the live values and a test supplies fixed ones.
-    """
+    """Assemble a ``schema.Provenance`` from fully supplied inputs."""
     return Provenance(
         git_sha=git_sha,
         config_hash=config_hash,

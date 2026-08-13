@@ -1,10 +1,4 @@
-"""Live SmolLM2-135M checks on CPU. Excluded from the default run.
-
-Marked ``slow`` and gated on both an installed ``transformers``/``torch`` (the ``hf``
-group) and ``FRONTIER_LIVE_MODELS``, so the default offline ``uv run pytest`` skips it
-before touching the network. It confirms the real tokenizer resolves the answer
-letters via the leading-space path and that a forward pass yields finite logits.
-"""
+"""Live SmolLM2-135M CPU checks: real-tokenizer letter resolution and finite logits."""
 
 from __future__ import annotations
 

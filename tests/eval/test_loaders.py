@@ -109,12 +109,10 @@ def test_parse_correct_answer() -> None:
 
 
 def test_parse_correct_answer_precedence_is_pinned() -> None:
-    # A lone digit is read positionally (digit - 1), not matched against option text:
-    # "3" against these options is the third option, not the option whose text is "3".
+    # A lone digit is read positionally (digit - 1), so "3" here means the third option.
     digit_options = ["3", "4", "5", "6"]
     assert parse_correct_answer("3", digit_options) == digit_options.index("5")
-    # A lone letter is read positionally too, so an out-of-range letter drops the item
-    # rather than falling through to a text match against a single-letter option.
+    # A lone letter is read positionally too, so an out-of-range letter drops the item.
     assert parse_correct_answer("X", ["X", "Y"]) is None
 
 

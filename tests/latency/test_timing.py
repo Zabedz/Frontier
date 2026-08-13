@@ -1,7 +1,7 @@
 """The clock seam and the trial collector on CPU, plus the stubbed CUDA-event path.
 
-The CUDA-event test pins the load-bearing rule from methodology section 4 without a
-GPU: the per-token loop never synchronises, and ``resolve`` synchronises exactly once.
+The stub pins methodology section 4 without a GPU: the per-token loop never synchronises,
+and ``resolve`` synchronises exactly once.
 """
 
 from __future__ import annotations

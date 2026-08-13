@@ -1,8 +1,6 @@
-"""The CPU-smoke milestone under pytest: a real model, an in-memory slice.
+"""The CPU-smoke milestone under pytest: a real model over a synthetic in-memory slice.
 
-Gated like the live backend test. The real ``HFLogitProvider`` scores a handful of
-synthetic MMLU-shaped records (so only the model is live, not the dataset), and the
-runner must land one schema-valid, fully-populated row in a ``tmp_path`` store.
+The runner must land one schema-valid, fully populated row in a ``tmp_path`` store.
 """
 
 from __future__ import annotations

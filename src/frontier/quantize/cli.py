@@ -1,9 +1,8 @@
-"""The ``frontier-quantize`` command: produce a variant's Track-B checkpoint.
+"""The ``frontier-quantize`` command: write a variant's compressed-tensors (vLLM) or GGUF
+(llama.cpp) checkpoint at ``checkpoint_path``, idempotently, for ``frontier run`` to serve.
 
-Reads a variant config and writes its compressed-tensors (vLLM) or GGUF (llama.cpp)
-checkpoint at ``checkpoint_path``, idempotently, so ``frontier run`` then serves it. This
-is a pod command: the compressed-tensors producer runs a GPU calibration pass and the
-GGUF producer shells out to llama.cpp, so the body is exercised on the pod, not in CPU CI.
+A pod command: the compressed-tensors producer runs a GPU calibration pass and the GGUF
+producer shells out to llama.cpp, so the body is exercised on the pod.
 """
 
 from __future__ import annotations
@@ -47,8 +46,8 @@ def run(
 ) -> None:
     """Resolve the config and produce its checkpoint for the config's backend.
 
-    The calibration draw comes from the variant's ``quant.calibration_seed``, so it is
-    covered by the config hash and reproducible from the config alone.
+    The calibration draw comes from ``quant.calibration_seed``, so it is covered by the
+    config hash and reproducible from the config alone.
     """
     resolved = resolve_config(config, config_root=config_root)
     out = _produce(resolved.variant, resolved.backend, checkpoints)

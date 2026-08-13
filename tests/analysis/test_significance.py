@@ -1,9 +1,7 @@
 """Pair resolution, the alignment guards, and the significance table.
 
-The guards carry the weight here: a paired bootstrap over two variants scored on
-different items returns a plausible number with no symptom, so every one of these
-mismatches has to raise or skip rather than produce a row. Small ``n_resamples`` keeps
-the statistics fast; their correctness is tested in ``tests/metrics/test_bootstrap.py``.
+A paired bootstrap over two variants scored on different items returns a plausible number
+with no symptom, so every mismatch here has to raise or skip.
 """
 
 from __future__ import annotations
@@ -307,10 +305,8 @@ def test_load_references_rejects_a_non_string_reference(tmp_path: Path) -> None:
 def _worse_than(rows: PredictionRows, *, bump: float = 0.25, flips: int = 8) -> PredictionRows:
     """The same items, made much more overconfident and slightly less accurate.
 
-    The defaults put calibration damage (+0.44) well clear of accuracy damage (+0.03),
-    which is the regime the gap and ratio are meant to detect. A large confidence bump is
-    needed because the base fixture draws confidence uniformly and independently of
-    correctness, so its ECE already sits near 0.17 and a small bump barely moves it.
+    The bump is large because the base fixture draws confidence independently of
+    correctness, so its ECE already sits near 0.17.
     """
     correct = rows.correct.copy()
     correct[np.flatnonzero(rows.correct)[:flips]] = False
@@ -373,8 +369,7 @@ def test_delta_ece_sweep_all_exclude_zero_tracks_the_weakest_bin_count() -> None
 
 
 def test_significance_table_refuses_a_variant_spanning_two_config_hashes(tmp_path: Path) -> None:
-    """A re-run under an edited config appends a second row; pooling both would double n
-    while leaving the seed-set and gold-vector guards satisfied."""
+    """Pooling a re-run's second row would double n with the seed and gold guards satisfied."""
     store, root = _store_with(
         tmp_path,
         [

@@ -1,8 +1,4 @@
-"""The llama.cpp extraction, driven by a fake Llama and tokenizer on CPU.
-
-Proves the last-position read, the per-prompt ``reset``, and that candidate letters
-resolve against the llama vocab with the leading-space-then-bare fallback.
-"""
+"""The llama.cpp extraction, driven by a fake Llama and tokenizer on CPU."""
 
 from __future__ import annotations
 

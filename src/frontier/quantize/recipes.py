@@ -1,10 +1,8 @@
 """llm-compressor recipe descriptors and the modifier build.
 
-The descriptor (``RecipeSpec``) is a pure mapping from a config ``quant.method`` to the
-short recipe kind and its group size, so path derivation and the tests read it without
-importing llm-compressor. ``to_modifiers`` turns a descriptor into the concrete
-modifier list, importing ``llmcompressor`` lazily; only the GPU producer and the gated
-recipe test reach it.
+``RecipeSpec`` maps a config ``quant.method`` to a recipe kind and group size with no
+llm-compressor import, so path derivation and the tests read it on any machine.
+``to_modifiers`` imports ``llmcompressor`` lazily; only the GPU producer reaches it.
 """
 
 from __future__ import annotations
@@ -22,9 +20,8 @@ _METHOD_KIND: dict[str, RecipeKind] = {
     "llmcompressor-w8a8": "w8a8",
 }
 
-# SmoothQuant's migration strength for the W8A8 recipe: 0.8 is the llm-compressor
-# default for decoder-only models, shifting most of the activation outlier scale onto
-# the weights before per-channel int8.
+# llm-compressor's default migration strength for decoder-only models: it shifts most of
+# the activation outlier scale onto the weights before per-channel int8.
 SMOOTHQUANT_STRENGTH = 0.8
 
 
@@ -38,12 +35,7 @@ class RecipeSpec:
 
 
 def recipe_for(quant: QuantSpec) -> RecipeSpec:
-    """Map ``quant.method`` to a recipe descriptor.
-
-    ``llmcompressor-gptq`` -> gptq, ``llmcompressor-awq`` -> awq,
-    ``llmcompressor-w8a8`` -> w8a8. Raises ``ValueError`` naming the method for anything
-    else (a bnb or gguf method has no compressed-tensors recipe).
-    """
+    """Map ``quant.method`` to a recipe descriptor; a bnb or gguf method has none."""
     try:
         kind = _METHOD_KIND[quant.method]
     except KeyError:
@@ -57,11 +49,8 @@ def recipe_for(quant: QuantSpec) -> RecipeSpec:
 def to_modifiers(spec: RecipeSpec) -> list[Any]:
     """Build the llm-compressor modifier list for a descriptor (imports llmcompressor).
 
-    GPTQ is a single ``GPTQModifier`` at ``W4A16``; its ``actorder`` defaults to
-    ``"weight"`` in the current release, the accuracy-recovery default, so it is not
-    overridden. AWQ pairs the ``AWQModifier`` (which learns per-channel scales from
-    calibration activations) with a ``QuantizationModifier`` at ``W4A16_ASYM``. W8A8
-    runs SmoothQuant before a ``GPTQModifier`` at ``W8A8`` for real int8 compute.
+    GPTQ's ``actorder`` is left at the current release's ``"weight"`` default, which is
+    the accuracy-recovery setting.
     """
     from llmcompressor.modifiers.awq import AWQModifier  # noqa: PLC0415
     from llmcompressor.modifiers.quantization import (  # noqa: PLC0415

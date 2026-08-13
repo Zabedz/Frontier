@@ -1,15 +1,8 @@
 """Peak-memory capture, weights on disk vs resident, and the analytic KV-cache size.
 
-Three memory numbers, measured differently. Peak VRAM is read from the CUDA allocator
-on the pod and proxied by process RSS on a laptop (labelled a proxy below, kept finite
-so ``tok_s_per_gb`` is finite on a smoke row; the ``cpu:`` hardware_id makes the row
-self-describing). Weights-on-disk is summed from the snapshot files. The KV-cache size
-is analytic from the model config, so it is CPU-testable, and it is the clean
-"KV growth with context length" curve rather than a noisy measurement.
-
-torch is lazy and reached only as an injected module; ``resource``/``sys`` carry the
-CPU path. On CPU the compute dtype is float32, so the KV-cache size uses the model's own
-parameter dtype rather than the configured GPU ``kv_cache_dtype``.
+The KV-cache size is computed from the model config, which keeps it CPU-testable and
+gives a clean KV-growth curve. torch is reached only as an injected module, so the CPU
+path runs on ``resource`` and ``sys``.
 """
 
 from __future__ import annotations
@@ -46,24 +39,17 @@ def kv_cache_mb(
     batch_size: int,
     dtype_bytes: int,
 ) -> float:
-    """Analytic KV-cache footprint in decimal MB.
+    """Analytic KV-cache footprint in decimal MB, at ``seq_len = context_len + decode_len``.
 
-    ``2 * n_layers * n_kv_heads * head_dim * seq_len * batch_size * dtype_bytes / 1e6``,
-    the factor 2 being keys and values. ``seq_len`` is defined as ``context_len +
-    decode_len`` (the footprint of the context plus the generated tokens); the literal
-    per-step peak is one position lower, since the final generated token is not fed back.
+    The literal per-step peak is one position lower, since the final generated token is
+    never fed back.
     """
     elements = _KEYS_AND_VALUES * n_layers * n_kv_heads * head_dim * seq_len * batch_size
     return elements * dtype_bytes / _BYTES_PER_MB
 
 
 def kv_cache_dims(config: Any) -> tuple[int, int, int]:
-    """Pull ``(n_layers, n_kv_heads, head_dim)`` from a HF config.
-
-    ``num_hidden_layers``; ``num_key_value_heads`` when present else
-    ``num_attention_heads`` (the MHA fallback); ``head_dim`` when present else
-    ``hidden_size // num_attention_heads``.
-    """
+    """Pull ``(n_layers, n_kv_heads, head_dim)`` from a HF config, with the MHA fallbacks."""
     n_layers = int(config.num_hidden_layers)
     n_heads = int(config.num_attention_heads)
     n_kv_heads = int(getattr(config, "num_key_value_heads", None) or n_heads)
@@ -72,7 +58,7 @@ def kv_cache_dims(config: Any) -> tuple[int, int, int]:
 
 
 def dtype_bytes(kv_cache_dtype: str) -> int:
-    """Bytes per KV element: fp16/bf16 to 2, fp32 to 4, int8 to 1. Raises on unknown."""
+    """Bytes per KV element for a ``kv_cache_dtype`` name."""
     try:
         return _DTYPE_BYTES[kv_cache_dtype]
     except KeyError:
@@ -85,7 +71,7 @@ def weights_disk_mb(model_dir: Path | None) -> float:
     """Sum of ``*.safetensors`` and ``*.bin`` sizes under the snapshot dir, decimal MB.
 
     ``model_dir`` is the resolved HF cache snapshot path, or ``None`` when unknown (then
-    ``0.0``). Track-B single-file GGUF weights are a later WP.
+    ``0.0``).
     """
     if model_dir is None:
         return 0.0
@@ -96,12 +82,11 @@ def weights_disk_mb(model_dir: Path | None) -> float:
 
 
 def measure_peak_memory_mb(device: str, torch_module: Any | None) -> float:
-    """Peak allocation in decimal MB.
+    """Peak allocation in decimal MB: the CUDA allocator's peak, or a process-RSS proxy.
 
-    On ``cuda``: ``torch.cuda.max_memory_allocated / 1e6`` (the caller resets the peak
-    before the measured generation). On ``cpu``: a process-RSS proxy via
-    ``resource.getrusage`` max RSS, unit-corrected (bytes on Darwin, KiB on Linux). The
-    CPU value is process RSS, not device VRAM; it is kept so the field stays finite.
+    The caller resets the CUDA peak before the measured generation. On CPU the value is
+    process RSS standing in for VRAM, kept so ``tok_s_per_gb`` stays finite on a smoke row
+    (the ``cpu:`` hardware_id makes that row self-describing).
     """
     if device.startswith("cuda") and torch_module is not None:
         return float(torch_module.cuda.max_memory_allocated(device)) / _BYTES_PER_MB
@@ -117,12 +102,8 @@ class MemoryProbe(Protocol):
 class HFMemoryProbe:
     """Measures one ``schema.Memory`` per (batch, context) on a loaded model.
 
-    Resets the CUDA peak, runs one generation at (batch, context) through the driver,
-    reads ``measure_peak_memory_mb`` for ``peak_vram_mb``, and computes ``kv_cache_mb``
-    analytically at ``seq_len = context_len + decode_len``. ``weights_disk_mb`` comes from
-    the snapshot dir and ``weights_resident_mb`` from ``torch.cuda.memory_allocated``
-    captured at construction, right after load (an RSS proxy on CPU). The KV-cache dtype
-    is the model's own parameter dtype, which is float32 on the CPU path.
+    ``weights_resident_mb`` is captured at construction, right after load. The KV-cache
+    dtype is the model's own parameter dtype, which is float32 on the CPU path.
     """
 
     def __init__(

@@ -1,10 +1,5 @@
-"""Inference backends: one per way of loading a model, all satisfying the WP2
-``LogitProvider`` seam. The two-track design means several backends (HF, bnb-quantised HF,
-vLLM, llama.cpp; torchao later) that read logits the same way but load models differently,
-so each lives here rather than tangled into the eval core or the runner. Every backend
-imports its heavy stack (``transformers``, ``vllm``, ``llama_cpp``, ``bitsandbytes``)
-lazily, so importing this package is cheap and needs none of them; ``build_provider``
-picks the backend from a variant's ``inference_backend``.
+"""Inference backends, one per way of loading a model, all satisfying the ``LogitProvider``
+seam. Each imports its heavy stack lazily, so importing this package needs none of them.
 """
 
 from __future__ import annotations

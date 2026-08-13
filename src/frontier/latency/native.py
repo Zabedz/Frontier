@@ -1,38 +1,9 @@
 """Track-B latency from each serving stack's own benchmarker.
 
-The WP4 CUDA-event rig drives an ``nn.Module`` token by token; vLLM and llama.cpp are not
-``nn.Module``s and do their own batching and kernel scheduling, so Python-side per-token
-marking of them is not meaningful. Track-B latency is therefore measured with the native
-tool (``vllm bench serve``, ``llama-bench``), parsed into ``schema.Latency``, and tagged
-with the backend. vLLM tok/s and llama.cpp tok/s never share a latency column with each
-other or with HF, exactly as an INT4 number never shares a column with an FP16 number on
-a different backend.
-
-The vLLM probe benches the artifact the eval scored. It serves ``provider.model`` (the
-compressed-tensors checkpoint dir, or the base model id for the FP16 fidelity gate)
-itself, drives ``vllm bench serve`` against that server once per batch size, and tears
-the server down when done. The runner measures latency before the eval touches the
-provider, and the provider builds its engine lazily, so the server has the GPU to
-itself. ``bench serve`` is the tool because its result JSON carries the median/p95 TTFT
-and TPOT split ``schema.Latency`` requires; ``bench latency`` reports a single
-end-to-end time, which cannot fill the two clocks. Command construction and the result
-keys are written against the vllm 0.25.1 source (``vllm/benchmarks/serve.py``: the
-``--percentile-metrics ttft,tpot --metric-percentiles 95`` run emits exactly the keys
-``parse_vllm_bench`` reads, and the bench waits up to 600s for the endpoint, absorbing
-the server's model-load window). The flow is validated once, watched, on the pod before
-any Track-B row is banked.
-
-Peak VRAM is read while the workload is alive: a point read under the still-running
-server for vLLM, a background ``VramSampler`` around the ``llama-bench`` process for
-GGUF. An ``nvidia-smi`` read taken after the process exits sees an idle GPU and would
-inflate ``tok_s_per_gb`` by dividing throughput by a few idle megabytes. What that read
-sees for vLLM is the engine's reservation, which ``vllm_memory_fraction`` sizes to the
-card minus a headroom, so a vLLM row's memory number and ``tok_s_per_gb`` are comparable
-against other vLLM rows measured on the same card.
-
-The two parsers are pure and CPU-tested against captured JSON. The subprocess runners,
-the server start, and the nvidia-smi reads are injectable, so the probes' control flow
-is CPU-tested too; only the real tool invocations need the pod.
+vLLM and llama.cpp do their own batching and kernel scheduling, so Python-side per-token
+marking cannot time them; each is measured with its native tool (``vllm bench serve``,
+``llama-bench``), parsed into ``schema.Latency``, and tagged so a backend's tok/s keeps
+its own column.
 """
 
 from __future__ import annotations
@@ -61,54 +32,32 @@ if TYPE_CHECKING:
     from frontier.eval.provider import LogitProvider
     from frontier.pipeline.config import ResolvedConfig
 
-# The neutral no-GPU machine state a pure parser carries; the pod probe replaces it with a
-# live nvidia-smi reading captured around the benchmark.
+# The no-GPU state a pure parser carries; the pod probes pass a live nvidia-smi reading.
 ABSENT_MACHINE_STATE = MachineState(0, 0, 0, 0.0, clocks_locked=False, clock_drift_flag=False)
 
 SERVER_STOP_TIMEOUT_S = 30.0
 VRAM_SAMPLE_INTERVAL_S = 0.5
 LOG_TAIL_LINES = 40
-# llama-bench generates single-stream, so a GGUF row carries one latency entry and labels
-# it batch size 1 rather than repeating the same measurement under the eval's batch axis.
+# llama-bench generates single-stream, so a GGUF row carries one entry, labelled batch 1.
 SINGLE_STREAM_BATCH = 1
 LLAMA_BENCH_DECODE_LEN = 128
-# vLLM sizes its KV cache to fill whatever gpu_memory_utilization allows, so the fraction
-# decides how much of the card a serving run actually uses. The rule is to take the card
-# minus a fixed headroom: a 20GB pod gets a larger KV cache than a 16GB one, which is the
-# reason to rent it. Headroom covers the CUDA context, allocator fragmentation, and the gap
-# between nvidia-smi's total and the memory torch can reach. Megabytes are nvidia-smi's,
-# matching _nvidia_used_mb.
+# Headroom in nvidia-smi MB for the CUDA context, fragmentation, and torch's unreachable tail.
 GPU_HEADROOM_MB = 1_800.0
-# The engine never asks for more than this share of a card, whatever the headroom rule
-# would allow. It binds above ~22GB, where a proportional headroom would be wasteful and a
-# bare subtraction would leave the driver a thinner margin than it has on a small card.
+# Caps the headroom rule above ~22GB, where a bare subtraction leaves the driver a thin margin.
 MAX_GPU_MEMORY_FRACTION = 0.92
-# Below this the 3B model's weights, its activations, and a KV cache worth benchmarking do
-# not fit together. 16GB cards report ~15.4-16.4GB, so the project's target card passes and
-# a 12GB card is rejected at load rather than during a run.
+# 16GB cards report ~15.4-16.4GB; below this the 3B weights and a usable KV cache do not fit.
 MIN_CARD_MB = 15_000.0
-# The serve command carries the fraction as text; rounding keeps the server log and the
-# process list readable, and 1e-4 of a card is a few megabytes.
+# The serve command carries the fraction as text, and 1e-4 of a card is a few megabytes.
 GPU_FRACTION_DECIMALS = 4
 
 
 def vllm_memory_fraction(total_mb: float) -> float:
     """The ``gpu_memory_utilization`` that uses this card down to ``GPU_HEADROOM_MB``.
 
-    The reservation scales with the card, so a larger pod buys a larger KV cache and more
-    throughput. It is also what a vLLM row records as peak VRAM, which makes that column
-    and ``tok_s_per_gb`` comparable only among vLLM rows measured on the same card
+    The reservation scales with the card, so a larger pod buys a larger KV cache. It is
+    also what a vLLM row records as peak VRAM, which leaves that column and
+    ``tok_s_per_gb`` comparable only among vLLM rows measured on the same card
     (docs/results_schema.md).
-
-    Args:
-        total_mb: the card's total memory, as ``nvidia-smi --query-gpu=memory.total``
-            reports it.
-
-    Returns:
-        The fraction to pass to ``vllm.LLM`` and to ``vllm serve``.
-
-    Raises:
-        ValueError: when the card is smaller than ``MIN_CARD_MB``.
     """
     if total_mb < MIN_CARD_MB:
         raise ValueError(
@@ -124,10 +73,9 @@ def parse_vllm_bench(
 ) -> Latency:
     """Parse a ``vllm bench serve --save-result`` JSON into one ``Latency``.
 
-    vLLM reports TTFT and TPOT (time-per-output-token, the ITL clock) median and p95
-    directly, plus ``output_throughput``. TTFT and ITL stay in separate columns, matching
-    the two-clocks rule. Requires the p95 percentile keys, so the benchmark is run with
-    ``--percentile-metrics ttft,tpot --metric-percentiles 95``.
+    TPOT (time-per-output-token) is vLLM's name for the ITL clock, and keeps its own
+    column. The p95 keys exist only when the bench runs with ``--metric-percentiles 95``;
+    the key names are those of vllm 0.25.1.
     """
     return Latency(
         batch_size=batch_size,
@@ -151,12 +99,10 @@ def parse_llama_bench(
 ) -> Latency:
     """Parse ``llama-bench -o json`` runs into one ``Latency``.
 
-    llama-bench emits one entry per test with a per-repetition tokens/sec sample list.
-    The prompt-processing (``pp``) entry is the prefill clock: each ``pp`` tok/s sample
-    maps to ``ttft_ms = context_len / tok_s * 1000``. The text-generation (``tg``) entry
-    is the decode clock: each ``tg`` tok/s sample maps to ``itl_ms = 1000 / tok_s``.
-    Median and p95 come from those derived per-sample distributions; throughput is the
-    median ``tg`` rate. ``warmup_discarded`` is 0 because llama-bench discards its own.
+    The prompt-processing (``pp``) entry is the prefill clock and the text-generation
+    (``tg``) entry the decode clock; each per-repetition tok/s sample becomes a per-token
+    time before the percentiles. ``warmup_discarded`` is 0 because llama-bench discards
+    its own.
     """
     pp_samples = _samples(_find_run(runs, gen=False))
     tg_samples = _samples(_find_run(runs, gen=True))
@@ -176,12 +122,7 @@ def parse_llama_bench(
 
 
 def _find_run(runs: Sequence[Mapping[str, Any]], *, gen: bool) -> Mapping[str, Any]:
-    """The text-generation run (``gen=True``) or the prompt-processing run.
-
-    A ``tg`` run generates tokens (``n_gen > 0`` and no prompt); a ``pp`` run only
-    processes the prompt (``n_prompt > 0`` and no generation). Raises ``ValueError`` if the
-    requested run is not among ``runs``.
-    """
+    """The text-generation run (``gen=True``) or the prompt-processing run."""
     for run in runs:
         n_prompt = int(run.get("n_prompt", 0))
         n_gen = int(run.get("n_gen", 0))
@@ -204,9 +145,8 @@ class VramSampler:
     """Peak GPU memory over a workload's lifetime, sampled on a background thread.
 
     nvidia-smi reports the moment's usage, so a reading taken after a benchmark process
-    exits sees an idle GPU. The sampler reads once on entry, every ``interval_s`` while
-    the workload runs, and once on exit; ``peak_mb`` is the max seen. Both the loop and
-    the exit read only ever raise ``peak_mb``, so the unsynchronised max is safe.
+    exits sees an idle GPU. Both the loop and the exit read only ever raise ``peak_mb``,
+    so the unsynchronised max is safe.
     """
 
     def __init__(
@@ -238,11 +178,10 @@ class VramSampler:
 class VllmServer:
     """A ``vllm serve`` process the probe owns: poll-guarded, stopped in ``finally``.
 
-    The server's stdout/stderr stream to ``log_path``: vLLM logs every request, and an
-    undrained PIPE would fill and deadlock the server mid-bench. The log tail rides along
-    in the failure message when the server dies, because the interesting error (an OOM, a
-    bad checkpoint) is in the server's output, and the bench client only sees a
-    connection refusal.
+    Output streams to ``log_path`` because vLLM logs every request and an undrained PIPE
+    would fill and deadlock the server mid-bench. A failure carries the log tail, since
+    the real error (an OOM, a bad checkpoint) is in the server's output while the bench
+    client only sees a refused connection.
     """
 
     def __init__(self, process: Any, log_path: Path) -> None:
@@ -278,14 +217,12 @@ class VllmServer:
 class NativeVllmLatency:
     """The vLLM ``LatencyProbe``: serve the eval's artifact, ``vllm bench`` it per batch.
 
-    The served model is ``provider.model``, the same weights the eval scored and
-    ``weights_disk_mb`` measures: the compressed-tensors checkpoint dir for a quantised
-    variant, the base model id for the FP16 fidelity gate. The probe owns the server
-    lifecycle; ``vllm bench serve`` performs its own endpoint ready-wait, and
-    ``assert_alive`` fails loudly, with the server log tail, when the server has died;
-    the bench would otherwise sit out its full ready-wait against a dead port. Every
-    collaborator that would touch a GPU or a subprocess is injectable, so the whole
-    control flow runs under CPU tests.
+    The served model is ``provider.model``, the same weights the eval scored: the
+    compressed-tensors checkpoint dir for a quantised variant, the base model id for the
+    FP16 fidelity gate. The runner measures latency before the eval touches the provider,
+    whose engine is built lazily, so this server has the GPU to itself. ``assert_alive``
+    catches a dead server between benches, which the client's 600s ready-wait would
+    otherwise absorb. Peak VRAM is a point read under the still-running server.
     """
 
     def __init__(
@@ -365,12 +302,12 @@ class NativeVllmLatency:
 
 
 class NativeLlamaCppLatency:
-    """The llama.cpp ``LatencyProbe``: run ``llama-bench`` per batch size and parse the JSON.
+    """The llama.cpp ``LatencyProbe``: run ``llama-bench`` once and parse the JSON.
 
-    Before any number is trusted it asserts full CUDA offload: the reported
-    ``n_gpu_layers`` must cover every layer, or a partial offload has silently turned the
-    decode clock into a CPU number. Peak VRAM comes from a ``VramSampler`` running while
-    llama-bench does, because the process (and its memory) is gone by parse time.
+    It asserts full CUDA offload before any number is trusted, since a partial offload
+    silently turns the decode clock into a CPU number. Peak VRAM comes from a
+    ``VramSampler`` running while llama-bench does, because the process and its memory are
+    gone by parse time.
     """
 
     def __init__(
@@ -424,9 +361,8 @@ class NativeLlamaCppLatency:
 def assert_full_offload(runs: Sequence[Mapping[str, Any]], *, model_layers: int) -> None:
     """Raise unless every llama-bench run offloaded the whole model to the GPU.
 
-    A GGUF decode number is only honest with zero CPU spill, so a run whose reported
-    ``n_gpu_layers`` is below the model's layer count fails loudly rather than reporting a
-    silently CPU-bound tok/s.
+    A reported ``n_gpu_layers`` below the model's layer count means CPU spill, and the
+    tok/s it produced would be silently CPU-bound.
     """
     for run in runs:
         reported = int(run.get("n_gpu_layers", 0))
@@ -448,8 +384,7 @@ def _assemble(
     batch_sizes: Sequence[int] | None = None,
 ) -> LatencyMemory:
     spec = resolved.variant.latency
-    # A single-stream backend measures one batch size and says so, rather than reporting
-    # the eval's batch axis it never exercised.
+    # A single-stream backend passes the one batch size it exercised.
     sizes = tuple(batch_sizes) if batch_sizes is not None else spec.batch_sizes
     disk_mb = _path_size_mb(weights_path)
     n_layers, n_kv_heads, head_dim = dims
@@ -483,11 +418,10 @@ def _assemble(
 def _vllm_serve_command(model: str, *, port: int, gpu_fraction: float) -> list[str]:
     """The ``vllm serve`` invocation the probe owns.
 
-    Prefix caching is off so every bench run pays a cold prefill: the three batch sizes
-    reuse one server, and the random dataset can repeat prompt prefixes across runs,
-    which would let a cached prefill warm the later TTFT readings. ``gpu_fraction`` comes
-    from the same ``vllm_memory_fraction`` call the eval engine makes, so the reservation
-    the VRAM read reports is the one the eval ran under.
+    Prefix caching is off so every bench run pays a cold prefill: the batch sizes reuse
+    one server, and the random dataset can repeat prompt prefixes across runs, which would
+    let a cached prefill warm the later TTFT readings. ``gpu_fraction`` is the reservation
+    the eval engine runs under, so the VRAM read reports the eval's own footprint.
     """
     return [
         "vllm",
@@ -509,11 +443,10 @@ def _vllm_bench_command(
     """The ``vllm bench serve`` invocation for one batch size.
 
     ``--num-prompts`` is ``batch_size * n_trials`` so every concurrency slot sees
-    ``n_trials`` requests. Input and output lengths mirror the WP4 rig's operating point
-    (fixed prefill at ``context_lengths[0]``, ``FULL_DECODE_LEN`` decode), so the HF and
-    vLLM clocks are read under the same load shape even though their columns never mix;
-    ``--ignore-eos`` holds the decode length there, since a model may emit EOS early on
-    random-token prompts and each variant would drift off the shape by its own amount.
+    ``n_trials`` requests. The lengths mirror the WP4 rig's operating point (prefill at
+    ``context_lengths[0]``, ``FULL_DECODE_LEN`` decode), and ``--ignore-eos`` holds the
+    decode length there, since a variant that emits EOS early on random-token prompts
+    would drift off the shape by its own amount.
     """
     spec = resolved.variant.latency
     return [
@@ -550,13 +483,11 @@ def _vllm_bench_command(
 def _llama_bench_command(gguf_path: Path, resolved: ResolvedConfig, context_len: int) -> list[str]:
     """The ``llama-bench`` invocation for one GGUF measurement.
 
-    ``-b`` is deliberately not set. It is llama.cpp's prefill chunk size, not a count of
-    concurrent requests, so feeding it the eval's batch sizes measured how fast a prompt
-    is chunked rather than how the model serves load: ``-b 1`` prefills one token at a
-    time and reports a TTFT an order of magnitude off a real deployment's, while the
-    decode rate does not move at all because llama-bench generates single-stream. The
-    default chunk size is what a llama.cpp deployment runs. ``-r`` carries the spec's
-    trial count so the GGUF track meets the same repetition floor as the HF rig.
+    ``-b`` is left at the default a llama.cpp deployment runs: it is the prefill chunk
+    size, so feeding it the eval's batch sizes would time how fast a prompt is chunked
+    (``-b 1`` reports a TTFT an order of magnitude off a deployment's) while the
+    single-stream decode rate stays put. ``-r`` carries the spec's trial count, meeting
+    the same repetition floor as the HF rig.
     """
     layers = resolved.backend["gpu_offload_layers"]
     return [

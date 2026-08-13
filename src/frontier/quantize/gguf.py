@@ -1,11 +1,9 @@
 """The GGUF producer: HF snapshot -> f16 GGUF -> k-quant, via llama.cpp tooling.
 
-Two subprocess steps, both CPU (no GPU is needed to build the file): ``convert_hf_to_gguf.py``
-writes an f16 intermediate once, then ``llama-quantize`` derives each k-quant from it.
-The subprocess runner is injected the way ``io.machine`` injects its nvidia-smi runner, so
-the command construction is exercised without llama.cpp present; the real conversion runs
-only in the gated pod producer test. Every step is idempotent per output file, so a
-re-run of the batch driver does not rebuild a checkpoint that already exists.
+Two CPU subprocess steps: ``convert_hf_to_gguf.py`` writes an f16 intermediate once, then
+``llama-quantize`` derives each k-quant from it. Both are idempotent per output file, so a
+re-run of the batch driver leaves an existing checkpoint alone. The subprocess runner is
+injected, so the command construction is exercised without llama.cpp present.
 """
 
 from __future__ import annotations
@@ -81,8 +79,8 @@ def produce_gguf(
     """Convert once to f16, then quantise to the variant's k-quant. Idempotent per file.
 
     ``model_snapshot`` is the resolved HF cache path for the base model. The f16
-    intermediate is shared across every k-quant of the same model, so it is converted
-    once and reused. Returns the final ``.gguf`` path.
+    intermediate is shared by every k-quant of the same model, so it is kept on disk after
+    conversion and reused.
     """
     out = checkpoint_path(variant, backend, root=checkpoints_root)
     if out.exists():

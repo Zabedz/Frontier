@@ -47,7 +47,7 @@ def test_pride_corrects_an_injected_letter_bias() -> None:
     naive = score_items([record], provider, scheme="none")
     debiased = score_items([record], provider, scheme="cyclic")
     assert int(naive.predicted[0]) == 0  # the letter bias drags the canonical order onto A
-    assert int(debiased.predicted[0]) == gold  # debiasing recovers the gold content
+    assert int(debiased.predicted[0]) == gold
     assert debiased.robustness is not None
     assert debiased.robustness.debias_flip_rate == pytest.approx(1.0)
 

@@ -1,10 +1,7 @@
-"""Synthetic logit providers and inline records shared across the eval suite.
+"""Synthetic logit providers and inline records for the eval suite; no model is loaded.
 
-The providers implement ``LogitProvider`` structurally, so no model is loaded. The
-sentinel provider builds logits for which PriDe is exactly invertible: the answer
-letter carries a fixed multiplicative preference and an injected per-position prior
-sits on top, so the additive log-prior cancels in the cyclic content aggregation and
-the tests can assert exact recovery, not just direction.
+The sentinel provider's log-prior cancels in cyclic aggregation, so PriDe is exactly
+invertible and the tests can assert exact recovery.
 """
 
 from __future__ import annotations
@@ -41,10 +38,8 @@ def sentinel_record(
 class SentinelOracleProvider:
     """Logits that place a fixed preference on the sentinel-marked option.
 
-    ``injected_prior`` is a per-letter-position probability vector (``None`` means
-    uniform over the item's option count). Each candidate logit is
-    ``base_logit`` at the position holding the sentinel content plus
-    ``log(injected_prior[position])``, so the softmax gives ``preference * prior``.
+    Each candidate logit is ``base_logit`` at the sentinel position plus
+    ``log(injected_prior[position])``, so the softmax gives preference times prior.
     """
 
     def __init__(

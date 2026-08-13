@@ -1,13 +1,7 @@
-"""Reliability diagrams and the ECE-vs-bin-count sweep, all read off the sidecars.
+"""Reliability diagrams and the ECE-vs-bin-count sweep, drawn from the sidecars.
 
-Every curve and every ECE comes from the committed ``frontier.metrics`` core; this
-module adds no binning maths, only the drawing. The sweep is the Option-A payoff: it
-recomputes ECE at any bin count directly from the per-item ``(confidence, correct)``
-arrays, so it is free to go finer than the six bin counts frozen on the stored row.
-
-The matplotlib ``Figure``/``Axes`` objects are an untyped boundary (a skipped import
-for mypy), so the drawing helpers take them as ``Any``; the module returns concrete
-``Path`` and ``dict`` values.
+Every curve and ECE comes from ``frontier.metrics``; matplotlib is a skipped import for
+mypy, so the drawing helpers take ``Figure``/``Axes`` as ``Any``.
 """
 
 from __future__ import annotations
@@ -46,8 +40,7 @@ _GAP_ALPHA = 0.35
 _BAR_FRACTION = 0.9
 _GAP_FRACTION = 0.55
 
-# A sweep deliberately finer than the six bin counts frozen on the stored row, so the
-# figure demonstrates that the sidecar re-bins freely (the Option-A payoff).
+# Finer than the six bin counts frozen on the stored row: the sidecar re-bins freely.
 DEFAULT_SWEEP_BINS: tuple[int, ...] = (2, 3, 5, 8, 10, 12, 15, 20, 25, 30, 40, 50)
 
 
@@ -74,10 +67,8 @@ def draw_reliability(
 ) -> None:
     """Draw one Guo-style reliability diagram onto an existing ``Axes``.
 
-    The per-bin accuracy is drawn as bars at the bin centres; the calibration gap
-    (over- or under-confidence) is overlaid as a translucent red bar from accuracy to
-    mean confidence. Empty bins carry ``np.nan`` and are dropped, not drawn at the
-    origin.
+    Per-bin accuracy is bars at the bin centres, with the calibration gap overlaid from
+    accuracy to mean confidence. Empty bins carry ``np.nan`` and are dropped.
     """
     edges = curve.edges
     centres = (edges[:-1] + edges[1:]) / 2.0
@@ -160,9 +151,8 @@ def reliability_gallery(
     """Render a small-multiples gallery, one cell per variant, to ``out_path``.
 
     Cells share 0..1 axes so the shape-against-diagonal reading is comparable. ``order``
-    fixes the cell sequence; it defaults to the sorted variant names (a caller holding
-    family and bit-width metadata can pass a bit-width-then-family order). All cells use
-    one hue: the facet position and cell title carry identity, not colour.
+    fixes the cell sequence and defaults to the sorted variant names. Every cell takes
+    one hue; the facet position and cell title carry identity.
     """
     names = list(order) if order is not None else sorted(preds_by_variant)
     count = len(names)
@@ -201,10 +191,8 @@ def ece_bins_sweep_figure(
 ) -> Path:
     """Render one ECE-vs-bin-count line per variant to ``out_path`` and return the path.
 
-    This is the figure that enforces "never publish a single ECE": ECE is recomputed
-    from the sidecars at every bin count in ``bin_counts``, free to go finer than the
-    stored sweep. Series are coloured in the palette's fixed order and a legend is
-    always present.
+    This figure carries the "never publish a single ECE" rule: ECE is recomputed from
+    the sidecars at every count in ``bin_counts``.
     """
     names = sorted(preds_by_variant)
     xs = list(bin_counts)

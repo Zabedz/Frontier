@@ -1,10 +1,7 @@
-"""Pure reductions over timing samples: percentiles, warmup discard, aggregation.
+"""Pure numpy reductions over timing samples: percentiles, warmup discard, aggregation.
 
-numpy only, no torch, so the whole file is exercised on a laptop with known answers.
-TTFT and inter-token latency stay separate the whole way through: a trial yields one
-TTFT and a run of per-token ITL spans, and the reduction never averages the two into
-one number. Median and p95 only, never mean, because the decode-step distribution is
-skewed and the p95 is the number a deployment cares about.
+TTFT and inter-token latency stay in separate columns through the reduction, and both
+reduce by median and p95 because the decode-step distribution is skewed.
 """
 
 from __future__ import annotations
@@ -22,7 +19,7 @@ MS_PER_S = 1000.0
 
 @dataclass(frozen=True, slots=True)
 class TrialTiming:
-    """One decode trial: its TTFT and its per-token ITL spans, all in milliseconds."""
+    """One decode trial: its TTFT and its per-token ITL spans."""
 
     ttft_ms: float
     itl_ms: tuple[float, ...]
@@ -42,12 +39,7 @@ class LatencyStats:
 
 
 def percentile(samples: Sequence[float], q: float) -> float:
-    """The ``q``th percentile under numpy's ``method="linear"`` (its default).
-
-    The method is fixed so the unit tests have exact known answers; under it
-    ``percentile(x, 50)`` is the median. Raises ``ValueError`` on an empty sequence,
-    because a latency number cannot be reported from no samples.
-    """
+    """The ``q``th percentile under numpy's ``method="linear"``, fixed for exact answers."""
     if len(samples) == 0:
         raise ValueError(f"cannot take the {q} percentile of an empty timing sample")
     return float(np.percentile(np.asarray(samples, dtype=float), q, method="linear"))
@@ -61,13 +53,10 @@ def discard_warmup(trials: Sequence[TrialTiming], warmup: int) -> list[TrialTimi
 def reduce_trials(trials: Sequence[TrialTiming], *, batch_size: int, warmup: int) -> LatencyStats:
     """Discard warmup, then reduce the survivors to one ``LatencyStats``.
 
-    TTFT contributes one sample per kept trial. ITL pools every per-token span across
-    all kept trials, the honest decode-step distribution rather than a mean of means.
-    Both reduce by median and p95. ``throughput_tok_s`` is ``batch_size * 1000 /
-    itl_median_ms``, the sustained decode tokens/s across the batch tied to the reported
-    median ITL. Raises ``ValueError`` if no trial survives the discard. When the pooled
-    ITL is empty (guarded upstream by ``decode_len >= 2``), or its median is zero, the
-    ITL medians and the throughput are ``NaN`` rather than a divide-by-zero.
+    TTFT contributes one sample per kept trial; ITL pools every per-token span across all
+    kept trials. ``throughput_tok_s`` is ``batch_size * 1000 / itl_median_ms``, the
+    sustained decode rate at the reported median ITL, and goes ``NaN`` when the pooled ITL
+    is empty or its median is zero.
     """
     kept = discard_warmup(trials, warmup)
     discarded = len(trials) - len(kept)

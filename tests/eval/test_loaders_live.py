@@ -1,9 +1,7 @@
-"""Live loader checks against the Hub. Excluded from the default run.
+"""Live Hub loader checks, gated on ``FRONTIER_LIVE_DATASETS``.
 
-Marked ``slow`` and skipped unless ``FRONTIER_LIVE_DATASETS`` is set, so the default
-``uv run pytest`` never touches the network. When enabled it confirms the three
-datasets still load natively under ``datasets`` 4.6 (no loading script) and that the
-normalisers produce in-range golds, the one thing the inline fixtures cannot prove.
+The three datasets still load without a loading script under ``datasets`` 4.6, with
+in-range golds.
 """
 
 from __future__ import annotations

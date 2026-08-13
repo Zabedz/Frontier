@@ -1,17 +1,7 @@
-"""Typed contracts for the benchmark: the variant config and the result row.
+"""Typed contracts for the benchmark: the variant config and the append-only result row.
 
-These are declarative data definitions, not behaviour. They exist so two rules the
-project cannot afford to break are structural rather than aspirational:
-
-- A result row cannot be built without its :class:`Provenance` and its
-  :class:`Backend`. Both are required, non-default fields. A number whose kernel or
-  git SHA was not recorded does not construct.
-- Latency, memory, and machine state are separated the way the methodology
-  requires (TTFT apart from inter-token latency; clock state attached to every
-  measurement), so the shape of the row keeps the analysis honest.
-
-Serialisation, validation, and the runner that populates these live elsewhere and
-are written against this contract.
+Serialisation, validation, and the runner that populates these are written against this
+contract and live elsewhere.
 """
 
 from __future__ import annotations
@@ -29,13 +19,10 @@ Labels = Literal["raw", "redux"]
 RunMode = Literal["smoke", "full"]
 
 
-# ---------------------------------------------------------------------------
-# Result row: the append-only record. Required records first, so they cannot be
-# omitted.
-# ---------------------------------------------------------------------------
+# The result row. Required records come first so they cannot be omitted.
 @dataclass(frozen=True, slots=True)
 class Provenance:
-    """Everything needed to reproduce a row. All fields required."""
+    """Everything needed to reproduce a row."""
 
     git_sha: str
     config_hash: str
@@ -52,9 +39,8 @@ class Provenance:
 class Backend:
     """The inference backend, a first-class field on every measurement.
 
-    An INT4 number and an FP16 number share a latency column only if they share a
-    backend. ``track`` names which of the two tracks (see ``docs/architecture.md``) produced
-    the row.
+    An INT4 number and an FP16 number share a latency column only if they share a backend.
+    ``track`` is the A/B split described in ``docs/architecture.md``.
     """
 
     inference_backend: Literal["hf", "vllm", "llama_cpp", "torchao"]
@@ -81,9 +67,9 @@ class TaskSpec:
 class Quality:
     """Task score plus the calibration battery.
 
-    ECE is never a single number: ``ece_bin_sweep`` maps bin count to ECE, and
-    ``ece_equal_mass_ace`` is the lower-bias companion. The headline anchors on the
-    bin-free ``brier_reliability`` term.
+    One ECE is never enough: ``ece_bin_sweep`` maps bin count to ECE, ``ece_equal_mass_ace``
+    is the lower-bias companion, and the headline anchors on the bin-free
+    ``brier_reliability`` term.
     """
 
     accuracy: float
@@ -108,26 +94,21 @@ class Quality:
 class Robustness:
     """Permutation sensitivity of the calibration instrument (methodology section 2).
 
-    The letter-selection confound moves with compression, so its magnitude is
-    reported alongside the calibration battery rather than folded into it.
-    ``permutation_consistency`` is the mean fraction of cyclic option orders whose
-    raw answer already matched the debiased answer, ``letter_bias`` is how far the
-    estimated per-letter-position prior sits from uniform, and ``debias_flip_rate``
-    is the fraction of items whose answer the debiasing changed. It is ``None`` on a
-    row whose eval used ``permutation_scheme="none"``.
+    The letter-selection confound moves with compression, so its magnitude is reported as
+    its own block beside the calibration battery.
     """
 
-    permutation_consistency: float
-    letter_bias: float
-    debias_flip_rate: float
+    permutation_consistency: float  # mean fraction of cyclic orders already at the debiased answer
+    letter_bias: float  # distance of the estimated per-letter-position prior from uniform
+    debias_flip_rate: float  # fraction of items whose answer the debiasing changed
 
 
 @dataclass(frozen=True, slots=True)
 class MachineState:
     """GPU clock and thermal state at measurement time.
 
-    On RunPod, clocks usually cannot be locked; ``clocks_locked`` records the
-    reality and the logged clock range is what defends the latency number.
+    Clocks usually cannot be locked on RunPod, so ``clocks_locked`` records the reality and
+    the logged clock range is what defends the latency number.
     """
 
     gpu_clock_sm_mhz: int
@@ -167,8 +148,11 @@ class Memory:
 
 @dataclass(frozen=True, slots=True)
 class ResultRow:
-    """One variant's full measurement. Provenance and backend come first and have
-    no defaults, so a row cannot be constructed without them."""
+    """One variant's full measurement.
+
+    ``provenance`` and ``backend`` have no defaults, so a row whose kernel or git SHA went
+    unrecorded does not construct.
+    """
 
     provenance: Provenance
     backend: Backend
@@ -179,12 +163,10 @@ class ResultRow:
     latency: list[Latency]
     memory: list[Memory]
     tok_s_per_gb: float
-    robustness: Robustness | None = None
+    robustness: Robustness | None = None  # None where the eval used permutation_scheme="none"
 
 
-# ---------------------------------------------------------------------------
-# Variant config: the YAML contract. One file fully defines a variant.
-# ---------------------------------------------------------------------------
+# The variant config: one YAML file fully defines a variant.
 @dataclass(frozen=True, slots=True)
 class ModelSpec:
     model_id: str
@@ -197,11 +179,11 @@ class ModelSpec:
 class QuantSpec:
     """One variant's quantisation settings.
 
-    ``calibration_seed`` picks the shuffle that selects ``calibration_samples`` rows from
-    the corpus, so it is an input to the produced weights and belongs in the config hash
+    ``calibration_seed`` picks the shuffle that selects ``calibration_samples`` rows from the
+    corpus, so it is an input to the produced weights and belongs in the config hash
     alongside the corpus. It stays ``None`` for a data-free method (bitsandbytes NF4, the
-    GGUF k-quants), whose output depends on the weights alone. A variant that names a
-    corpus and omits the seed is rejected by the producer.
+    GGUF k-quants), and a variant that names a corpus while omitting it is rejected by the
+    producer.
     """
 
     method: str

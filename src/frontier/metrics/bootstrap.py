@@ -1,10 +1,9 @@
 """Paired bootstrap confidence intervals via ``scipy.stats.bootstrap``.
 
-Every statistic runs on 1-D per-item arrays, so ``paired=True`` resamples one index
-vector and applies it to confidence and correctness together; the two variants of a
-delta never resample independently (methodology section 6). Percentile intervals,
-not BCa: the degenerate fixtures (all-correct, identical variants) give a constant
-resample distribution on which BCa's acceleration term is undefined.
+Every statistic runs on 1-D per-item arrays, so ``paired=True`` applies one index vector to
+confidence, correctness, and both variants of a delta together (methodology section 6). The
+intervals are percentile: BCa's acceleration term is undefined on the constant resample
+distribution a degenerate fixture (all-correct, identical variants) produces.
 """
 
 from __future__ import annotations
@@ -44,13 +43,11 @@ class ConfidenceInterval:
 class RatioInterval:
     """A ratio of two relative changes, with the diagnostics that say whether to trust it.
 
-    A ratio whose denominator can approach zero has no usable percentile interval: the
-    resample distribution acquires a second mode at the opposite sign and the quantiles
-    stop describing anything. ``denominator`` carries the denominator's own interval so
-    the caller can see whether it is safely signed, and ``nonfinite_resamples`` counts
-    the resamples where the ratio was undefined outright. ``low`` and ``high`` are
-    ``nan`` whenever a resample came back non-finite. Nothing is recomputed from the
-    finite resamples alone.
+    A denominator that can approach zero gives the resample distribution a second mode at
+    the opposite sign, so ``denominator`` carries its own interval for the caller to check
+    the sign, and ``nonfinite_resamples`` counts the draws where the ratio was undefined.
+    ``low`` and ``high`` go ``nan`` as soon as one resample is non-finite, with no
+    recomputation from the finite ones.
     """
 
     point: float
@@ -62,11 +59,7 @@ class RatioInterval:
 
     @property
     def usable(self) -> bool:
-        """Whether the interval describes the ratio.
-
-        Requires every resample to have been finite and the denominator's interval to
-        stay clear of zero.
-        """
+        """Whether the interval can be quoted."""
         return self.nonfinite_resamples == 0 and self.denominator.excludes_zero
 
 
@@ -114,10 +107,7 @@ def ece_ci(
     n_resamples: int = DEFAULT_RESAMPLES,
     rng: np.random.Generator | int | None = None,
 ) -> ConfidenceInterval:
-    """Percentile bootstrap interval on a single-variant ECE.
-
-    ``confidence`` and ``correct`` resample together under ``paired=True``.
-    """
+    """Percentile bootstrap interval on a single-variant ECE."""
     point = ece_from_confidence(
         confidence, correct, n_bins=n_bins, scheme=scheme, weighting=weighting
     )
@@ -153,11 +143,7 @@ def paired_delta_accuracy_ci(
     n_resamples: int = DEFAULT_RESAMPLES,
     rng: np.random.Generator | int | None = None,
 ) -> ConfidenceInterval:
-    """Percentile bootstrap interval on the paired accuracy delta ``b - a``.
-
-    One index vector resamples ``correct_a`` and ``correct_b`` together, so the
-    delta CI reflects the paired difference, never independent resampling.
-    """
+    """Percentile bootstrap interval on the paired accuracy delta ``b - a``."""
     point = float(np.mean(correct_b) - np.mean(correct_a))
 
     def statistic(resampled_a: CorrectArray, resampled_b: CorrectArray) -> float:
@@ -192,10 +178,8 @@ def paired_delta_ece_ci(
 ) -> ConfidenceInterval:
     """Percentile bootstrap interval on the paired ECE delta ``b - a``.
 
-    A single index vector resamples all four arrays together, so ``confidence_a`` /
-    ``correct_a`` and ``confidence_b`` / ``correct_b`` stay aligned across every
-    resample. The gold labels are shared across variants, so ``correct_a`` and
-    ``correct_b`` are computed against the same gold before entering the bootstrap.
+    One index vector resamples all four arrays, so the caller has to pass them item-aligned
+    and scored against the same gold.
     """
 
     def delta(
@@ -232,11 +216,7 @@ def _paired_percentile_ci(
     n_resamples: int,
     rng: np.random.Generator | int | None,
 ) -> tuple[float, float, FloatArray]:
-    """One paired percentile bootstrap: the interval plus the resample distribution.
-
-    The distribution comes back so a caller whose statistic can be undefined on a given
-    resample (a ratio) can count those draws.
-    """
+    """One paired percentile bootstrap; the distribution lets a caller count undefined draws."""
     result = bootstrap(
         arrays,
         statistic,
@@ -264,11 +244,10 @@ def relative_damages(
 ) -> tuple[float, float]:
     """Relative calibration damage and relative accuracy damage of ``b`` against ``a``.
 
-    Both are signed so that positive means ``b`` is the worse model: calibration damage
-    is the fractional rise in ECE, accuracy damage the fractional fall in accuracy.
-    On one scale the two are directly comparable, which is what "calibration degrades
-    faster than accuracy" asks for. Either is ``nan`` when its reference value is zero,
-    which marks the resample undefined.
+    Both are signed so that positive means ``b`` is the worse model: calibration damage is
+    the fractional rise in ECE, accuracy damage the fractional fall in accuracy, which puts
+    the two on one scale. Either is ``nan`` when its reference value is zero, marking the
+    resample undefined.
     """
     ece_a = ece_from_confidence(
         confidence_a, correct_a, n_bins=n_bins, scheme=scheme, weighting=weighting
@@ -298,13 +277,10 @@ def paired_damage_gap_ci(
 ) -> ConfidenceInterval:
     """Percentile bootstrap interval on the damage gap, calibration minus accuracy.
 
-    An interval wholly above zero is the direction claim: compression costs more
-    calibration than accuracy, measured in relative terms. The gap is a difference of
-    two fractions, so it stays well behaved where the accuracy damage is near zero and
-    the ratio stops being estimable.
-
-    Both damages are recomputed inside every resample, reference values included, so
-    the statistic is the plug-in estimate of the gap on that resample.
+    An interval wholly above zero is the direction claim, that compression costs more
+    calibration than accuracy in relative terms. Being a difference of two fractions, the
+    gap stays estimable where the accuracy damage is near zero and the ratio is not. Both
+    damages are recomputed inside every resample, reference values included.
     """
 
     def gap(
@@ -339,13 +315,12 @@ def paired_damage_ratio_ci(
     n_resamples: int = DEFAULT_RESAMPLES,
     rng: np.random.Generator | int | None = None,
 ) -> RatioInterval:
-    """Percentile bootstrap on the damage ratio: how many times the calibration loss
-    outruns the accuracy loss.
+    """Percentile bootstrap on the damage ratio, calibration loss over accuracy loss.
 
-    This is the magnitude behind a claim like "ECE degrades twice as fast". The
-    denominator is bootstrapped alongside the ratio, because a ratio whose denominator
-    interval spans zero has no meaningful quantiles however tight they look. Read
-    ``RatioInterval.usable`` before quoting the interval.
+    The ratio is the magnitude behind "ECE degrades twice as fast". Its denominator is
+    bootstrapped alongside it, because a ratio whose denominator interval spans zero has no
+    meaningful quantiles however tight they look. Read ``RatioInterval.usable`` before
+    quoting the interval.
     """
 
     def ratio(
@@ -367,10 +342,7 @@ def paired_damage_ratio_ci(
 
     arrays = (confidence_a, correct_a, confidence_b, correct_b)
     point = ratio(confidence_a, correct_a, confidence_b, correct_b)
-    # An undefined resample turns scipy's quantiles to nan, on which it warns about a BCa
-    # interval it was never asked for. The nan is the expected outcome for a ratio with a
-    # vanishing denominator, and ``nonfinite_resamples`` below reports it in terms that
-    # name the real condition, so the misleading warning is dropped here.
+    # A nan quantile from an undefined resample draws a BCa warning that does not apply here.
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DegenerateDataWarning)
         low, high, distribution = _paired_percentile_ci(

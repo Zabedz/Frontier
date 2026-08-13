@@ -1,8 +1,8 @@
 """The ``frontier`` command: run one variant x eval-profile and append a result row.
 
 Options use the ``Annotated`` form so a ``typer.Option`` call never sits in a default
-argument (which ruff bugbear ``B008`` flags). ``mode`` is a plain string validated in
-the body, version-stable across typer releases without an Enum assumption.
+argument, which ruff bugbear ``B008`` flags. ``mode`` is a plain string validated in the
+body, which holds across typer releases whatever they do with Enums.
 """
 
 from __future__ import annotations
@@ -25,10 +25,8 @@ if TYPE_CHECKING:
     from frontier.analysis.load import XCost
     from frontier.analysis.significance import PairSignificance, Skipped
 
-# The analysis stack pulls matplotlib and pandas; it is imported inside `plot` so that
-# `frontier run` does not pay that startup cost. Under `from __future__ import
-# annotations` the XCost/ColorBy return hints stay strings, so the TYPE_CHECKING import
-# is all the parsers need.
+# The analysis stack pulls matplotlib and pandas, so `plot` imports it in the body to keep
+# `frontier run` startup cheap.
 
 _FIGURE_NAMES = frozenset({"frontier", "reliability", "sweep"})
 
@@ -122,8 +120,7 @@ def plot(
         ),
     ] = False,
 ) -> None:
-    """Read the result store and write the frontier chart, the reliability gallery, and
-    the ECE-vs-bins sweep to plots_dir."""
+    """Read the result store and write the requested figures to ``plots_dir``."""
     from frontier.analysis import (  # noqa: PLC0415
         collapse_seeds,
         ece_bins_sweep_figure,
@@ -198,9 +195,8 @@ def significance(
 ) -> None:
     """Pair each variant against its backend's reference and bootstrap the deltas.
 
-    Reports the absolute accuracy and ECE deltas, the relative damage gap that says
-    whether calibration degrades faster than accuracy, and the damage ratio that says by
-    what multiple.
+    The damage gap says whether calibration degrades faster than accuracy; the damage
+    ratio says by what multiple.
     """
     from frontier.analysis import (  # noqa: PLC0415
         load_references,
@@ -223,7 +219,7 @@ def significance(
     )
     destination = out if out is not None else results / "significance.parquet"
     if found:
-        # Same write discipline as the result store: the previous table survives a crash
+        # Staged like the result store's parquet, so the previous table survives a crash
         # part way through the write.
         destination.parent.mkdir(parents=True, exist_ok=True)
         staging = destination.with_suffix(destination.suffix + ".tmp")

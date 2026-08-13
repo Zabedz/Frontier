@@ -1,10 +1,6 @@
-"""The FP16 HF-vs-vLLM fidelity gate. Pod-only, gated, skipped on the CPU loop.
+"""The FP16 HF-vs-vLLM fidelity gate on one MMLU slice. Pod-only, gated.
 
-Scores an unquantised FP16 Qwen2.5-3B through the HF backend and the vLLM backend on the
-same MMLU slice and asserts the candidate softmax and the ECE agree. This is the
-architecture rule that a Track-B method reproduces the Track-A baseline before its ECE is
-admitted next to an HF ECE, and it is the empirical proof that the ``logprobs=-1``
-extraction reproduces the HF candidate softmax by construction.
+Track B must reproduce the Track-A baseline before its ECE is admitted next to an HF ECE.
 """
 
 from __future__ import annotations

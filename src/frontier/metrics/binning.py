@@ -1,9 +1,5 @@
-"""Equal-width and equal-mass binning of top-label confidence.
-
-The reusable layer under both the ECE family and the Brier decomposition. Edges
-and per-bin statistics follow numpy's histogram convention (every bin left-closed,
-the last bin closed on both ends), so they match netcal exactly and torchmetrics
-for every interior confidence.
+"""Equal-width and equal-mass binning of top-label confidence, shared by the ECE family
+and the Brier decomposition.
 """
 
 from __future__ import annotations
@@ -22,9 +18,8 @@ BinScheme = Literal["equal_width", "equal_mass"]
 class BinStats:
     """Per-bin counts and means over a single confidence array.
 
-    Empty bins carry ``count == 0`` with ``mean_confidence`` and ``accuracy`` set
-    to ``0.0``, so they contribute nothing to a mass-weighted sum and drop out of
-    an equal-weight average.
+    The zeroed means on an empty bin keep it out of both the mass-weighted sum and the
+    equal-weight average.
     """
 
     edges: FloatArray  # (n_effective_bins + 1,)
@@ -36,11 +31,9 @@ class BinStats:
 def bin_edges(confidence: FloatArray, n_bins: int, scheme: BinScheme) -> FloatArray:
     """Return the bin edges for ``scheme`` over ``[0, 1]``.
 
-    Equal-width edges are ``linspace(0, 1, n_bins + 1)``. Equal-mass edges are the
-    ``n_bins + 1`` confidence quantiles with the outer two forced to 0.0 and 1.0,
-    then de-duplicated: a degenerate (near-constant) confidence distribution cannot
-    support ``n_bins`` distinct quantile cuts, so the effective bin count falls
-    rather than handing ``np.histogram`` non-increasing edges.
+    Equal-mass edges are confidence quantiles, de-duplicated: a near-constant confidence
+    distribution supports fewer than ``n_bins`` distinct cuts, and the effective bin count
+    falls to what the quantiles can carry.
     """
     if n_bins < 1:
         raise ValueError(f"n_bins must be >= 1, got {n_bins}")
@@ -58,8 +51,8 @@ def bin_stats(
 ) -> BinStats:
     """Bin ``confidence`` and reduce ``correct`` within each bin.
 
-    Uses ``np.histogram`` for the counts and weighted sums so the bin assignment
-    matches netcal (and torchmetrics for interior confidences) exactly.
+    ``np.histogram`` does the assignment, which matches netcal exactly and torchmetrics on
+    interior confidences.
     """
     edges = bin_edges(confidence, n_bins, scheme)
     count = np.histogram(confidence, bins=edges)[0]

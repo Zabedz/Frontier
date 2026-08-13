@@ -1,14 +1,7 @@
 """The config hashes of every banked variant, pinned.
 
-Six rows are already in the result store. Their ``config_hash`` keys the resume-skip and
-names their predictions sidecar, so a config edit that moves one of these hashes orphans a
-banked row: a re-run stops matching ``_done_seeds`` and appends a duplicate instead of
-skipping. That is cheap to do by accident, because the hash covers the whole merged config
-and a key added to ``configs/base.yaml`` reaches every variant.
-
-These pins fail loudly when that happens. A deliberate change to one of these variants
-means updating its pin here in the same commit, which is the point: the change becomes a
-decision in the diff.
+The hash keys the resume-skip and the sidecar name, so moving one orphans a banked row and
+a re-run appends a duplicate. A deliberate change updates its pin in the same commit.
 """
 
 from __future__ import annotations
@@ -55,11 +48,7 @@ def test_a_variant_naming_a_calibration_corpus_also_names_its_seed(variant: str)
 
 
 def test_a_data_free_variant_carries_no_calibration_seed() -> None:
-    """bitsandbytes NF4 and the GGUF k-quants derive from the weights alone.
-
-    Giving them a seed would put a value in the hash that changes nothing about the
-    checkpoint, and would move the pins above.
-    """
+    """NF4 and the GGUF k-quants derive from the weights alone, so a seed would only move pins."""
     for variant in ("int4-nf4", "gguf-q4_k_m"):
         resolved = resolve_config(
             CONFIG_ROOT / "variants" / f"{variant}.yaml", config_root=CONFIG_ROOT
@@ -69,10 +58,6 @@ def test_a_data_free_variant_carries_no_calibration_seed() -> None:
 
 
 def test_the_shared_defaults_carry_no_quant_block() -> None:
-    """``configs/base.yaml`` must stay clear of quant keys.
-
-    Every variant overlays base, so a quant key there would enter every merged config and
-    move every hash in ``BANKED_HASHES`` at once.
-    """
+    """A quant key in ``configs/base.yaml`` would enter every merged config and move every pin."""
     resolved = resolve_config(CONFIG_ROOT / "variants" / "fp16.yaml", config_root=CONFIG_ROOT)
     assert resolved.raw.get("quant") is None

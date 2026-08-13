@@ -1,7 +1,6 @@
 """The frontier chart renders on every axis and grouping, and highlights the front.
 
-The synthetic frame has four variants across three families; its memory-axis Pareto
-front spans two families, the multi-family highlight the chart exists to show.
+The frame's memory-axis Pareto front spans two families, the case the chart exists to show.
 """
 
 from __future__ import annotations
