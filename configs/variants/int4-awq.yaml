@@ -12,5 +12,6 @@ quant:
   group_size: 128
   calibration_corpus: in_domain
   calibration_samples: 512
+  calibration_seed: 620       # the draw that selects the samples; hashed with the corpus
 # AWQ scales come from calibration activations, so the OOD pair should move ECE
 # more than GPTQ's. That is the pre-registered hypothesis for the calibration axis.

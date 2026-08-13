@@ -12,3 +12,4 @@ quant:
   group_size: 128
   calibration_corpus: ood     # out-of-domain corpus, matched sample count and seqlen
   calibration_samples: 512
+  calibration_seed: 620       # the draw that selects the samples; hashed with the corpus

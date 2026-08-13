@@ -195,11 +195,21 @@ class ModelSpec:
 
 @dataclass(frozen=True, slots=True)
 class QuantSpec:
+    """One variant's quantisation settings.
+
+    ``calibration_seed`` picks the shuffle that selects ``calibration_samples`` rows from
+    the corpus, so it is an input to the produced weights and belongs in the config hash
+    alongside the corpus. It stays ``None`` for a data-free method (bitsandbytes NF4, the
+    GGUF k-quants), whose output depends on the weights alone. A variant that names a
+    corpus and omits the seed is rejected by the producer.
+    """
+
     method: str
     bit_width: int
     group_size: int
     calibration_corpus: CalibrationCorpus = "none"
     calibration_samples: int = 0
+    calibration_seed: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

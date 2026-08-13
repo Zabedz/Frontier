@@ -5,77 +5,212 @@
   "description": "One variant. The runner deep-merges base.yaml, then this file, then smoke.yaml when --mode smoke. A variant is fully defined by data; adding one is adding a file.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["name", "family", "track", "backend"],
+  "required": [
+    "name",
+    "family",
+    "track",
+    "backend"
+  ],
   "properties": {
-    "name": { "type": "string" },
-    "family": { "enum": ["baseline", "ptq", "qat", "distill"] },
-    "track": { "enum": ["A", "B"], "description": "A = PyTorch/HF (calibration-comparable logits); B = native serving (vLLM / llama.cpp)" },
+    "name": {
+      "type": "string"
+    },
+    "family": {
+      "enum": [
+        "baseline",
+        "ptq",
+        "qat",
+        "distill"
+      ]
+    },
+    "track": {
+      "enum": [
+        "A",
+        "B"
+      ],
+      "description": "A = PyTorch/HF (calibration-comparable logits); B = native serving (vLLM / llama.cpp)"
+    },
     "model": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "model_id": { "type": "string" },
-        "model_revision": { "type": "string" },
-        "student_id": { "type": ["string", "null"] },
-        "student_revision": { "type": "string" }
+        "model_id": {
+          "type": "string"
+        },
+        "model_revision": {
+          "type": "string"
+        },
+        "student_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "student_revision": {
+          "type": "string"
+        }
       }
     },
     "backend": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["inference_backend", "weight_dtype", "kv_cache_dtype", "gpu_offload_layers"],
+      "required": [
+        "inference_backend",
+        "weight_dtype",
+        "kv_cache_dtype",
+        "gpu_offload_layers"
+      ],
       "properties": {
-        "inference_backend": { "enum": ["hf", "vllm", "llama_cpp", "torchao"] },
-        "weight_dtype": { "type": "string" },
-        "kv_cache_dtype": { "type": "string" },
-        "gpu_offload_layers": { "type": "integer" }
+        "inference_backend": {
+          "enum": [
+            "hf",
+            "vllm",
+            "llama_cpp",
+            "torchao"
+          ]
+        },
+        "weight_dtype": {
+          "type": "string"
+        },
+        "kv_cache_dtype": {
+          "type": "string"
+        },
+        "gpu_offload_layers": {
+          "type": "integer"
+        }
       }
     },
     "quant": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "additionalProperties": false,
       "properties": {
-        "method": { "type": "string" },
-        "bit_width": { "type": "integer" },
-        "group_size": { "type": "integer" },
-        "calibration_corpus": { "enum": ["none", "in_domain", "ood"] },
-        "calibration_samples": { "type": "integer" }
+        "method": {
+          "type": "string"
+        },
+        "bit_width": {
+          "type": "integer"
+        },
+        "group_size": {
+          "type": "integer"
+        },
+        "calibration_corpus": {
+          "enum": [
+            "none",
+            "in_domain",
+            "ood"
+          ]
+        },
+        "calibration_samples": {
+          "type": "integer"
+        },
+        "calibration_seed": {
+          "type": "integer"
+        }
       }
     },
     "distill": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "additionalProperties": false,
       "properties": {
-        "mode": { "enum": ["hard_label", "soft_label_topk"] },
-        "top_k": { "type": "integer" },
-        "train_tokens": { "type": "integer" },
-        "epochs": { "type": "integer" },
-        "kd_temperature": { "type": "number" }
+        "mode": {
+          "enum": [
+            "hard_label",
+            "soft_label_topk"
+          ]
+        },
+        "top_k": {
+          "type": "integer"
+        },
+        "train_tokens": {
+          "type": "integer"
+        },
+        "epochs": {
+          "type": "integer"
+        },
+        "kd_temperature": {
+          "type": "number"
+        }
       }
     },
     "eval": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "task_name": { "type": "string" },
-        "split": { "type": "string" },
-        "subset_size": { "type": ["integer", "null"] },
-        "prompt_style": { "enum": ["zeroshot", "fiveshot"] },
-        "scoring": { "enum": ["letter_softmax", "acc_norm"] },
-        "permutation_scheme": { "enum": ["none", "cyclic"] },
-        "labels": { "enum": ["raw", "redux"] },
-        "cot": { "type": "boolean" },
-        "seeds": { "type": "array", "items": { "type": "integer" } }
+        "task_name": {
+          "type": "string"
+        },
+        "split": {
+          "type": "string"
+        },
+        "subset_size": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "prompt_style": {
+          "enum": [
+            "zeroshot",
+            "fiveshot"
+          ]
+        },
+        "scoring": {
+          "enum": [
+            "letter_softmax",
+            "acc_norm"
+          ]
+        },
+        "permutation_scheme": {
+          "enum": [
+            "none",
+            "cyclic"
+          ]
+        },
+        "labels": {
+          "enum": [
+            "raw",
+            "redux"
+          ]
+        },
+        "cot": {
+          "type": "boolean"
+        },
+        "seeds": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        }
       }
     },
     "latency": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "batch_sizes": { "type": "array", "items": { "type": "integer" } },
-        "context_lengths": { "type": "array", "items": { "type": "integer" } },
-        "n_trials": { "type": "integer" },
-        "warmup": { "type": "integer" }
+        "batch_sizes": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "context_lengths": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "n_trials": {
+          "type": "integer"
+        },
+        "warmup": {
+          "type": "integer"
+        }
       }
     }
   }

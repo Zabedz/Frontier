@@ -44,22 +44,23 @@ def run(
     config_root: Annotated[Path, typer.Option("--config-root", help="Config root.")] = Path(
         "configs"
     ),
-    seed: Annotated[int, typer.Option("--seed", help="Calibration sampling seed.")] = 42,
 ) -> None:
-    """Resolve the config and produce its checkpoint for the config's backend."""
+    """Resolve the config and produce its checkpoint for the config's backend.
+
+    The calibration draw comes from the variant's ``quant.calibration_seed``, so it is
+    covered by the config hash and reproducible from the config alone.
+    """
     resolved = resolve_config(config, config_root=config_root)
-    out = _produce(resolved.variant, resolved.backend, checkpoints, seed=seed)
+    out = _produce(resolved.variant, resolved.backend, checkpoints)
     _console.print(
         f"[green]checkpoint ready[/green] for [bold]{resolved.variant.name}[/bold]: {out}"
     )
 
 
-def _produce(
-    variant: VariantConfig, backend: Mapping[str, Any], checkpoints: Path, *, seed: int
-) -> Path:
+def _produce(variant: VariantConfig, backend: Mapping[str, Any], checkpoints: Path) -> Path:
     inference_backend = backend["inference_backend"]
     if inference_backend == "vllm":
-        return produce_compressed_tensors(variant, backend, checkpoints_root=checkpoints, seed=seed)
+        return produce_compressed_tensors(variant, backend, checkpoints_root=checkpoints)
     if inference_backend == "llama_cpp":
         return produce_gguf(
             variant,

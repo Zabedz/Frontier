@@ -14,6 +14,7 @@ from frontier.quantize import cli
 from frontier.schema import VariantConfig
 
 CONFIG_ROOT = Path(__file__).resolve().parents[2] / "configs"
+CALIBRATION_SEED = 620
 
 
 def test_produce_dispatches_to_compressed_tensors(
@@ -22,27 +23,25 @@ def test_produce_dispatches_to_compressed_tensors(
     resolved = resolve_config(CONFIG_ROOT / "variants" / "int4-gptq.yaml", config_root=CONFIG_ROOT)
     seen: dict[str, Any] = {}
 
-    def fake(
-        variant: VariantConfig, backend: Mapping[str, Any], *, checkpoints_root: Path, seed: int
-    ) -> Path:
+    def fake(variant: VariantConfig, backend: Mapping[str, Any], *, checkpoints_root: Path) -> Path:
         seen["name"] = variant.name
         seen["backend"] = backend["inference_backend"]
         seen["checkpoints_root"] = checkpoints_root
-        seen["seed"] = seed
+        seen["calibration_seed"] = variant.quant.calibration_seed if variant.quant else None
         return checkpoints_root / "ckpt"
 
     monkeypatch.setattr(cli, "produce_compressed_tensors", fake)
-    out = cli._produce(resolved.variant, resolved.backend, tmp_path, seed=7)
+    out = cli._produce(resolved.variant, resolved.backend, tmp_path)
     assert out == tmp_path / "ckpt"
     assert seen == {
         "name": "int4-gptq",
         "backend": "vllm",
         "checkpoints_root": tmp_path,
-        "seed": 7,
+        "calibration_seed": CALIBRATION_SEED,
     }
 
 
 def test_produce_rejects_a_backend_without_a_producer(tmp_path: Path) -> None:
     resolved = resolve_config(CONFIG_ROOT / "variants" / "fp16.yaml", config_root=CONFIG_ROOT)
     with pytest.raises(typer.BadParameter, match="no producer"):
-        cli._produce(resolved.variant, resolved.backend, tmp_path, seed=42)
+        cli._produce(resolved.variant, resolved.backend, tmp_path)

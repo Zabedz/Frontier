@@ -7,6 +7,7 @@ driver never wastes a calibration pass and a misrouted config fails loudly.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -50,3 +51,14 @@ def test_producer_rejects_a_variant_without_quant(tmp_path: Path) -> None:
     resolved = resolve_config(CONFIG_ROOT / "variants" / "fp16-vllm.yaml", config_root=CONFIG_ROOT)
     with pytest.raises(ValueError, match="no quant block"):
         produce_compressed_tensors(resolved.variant, resolved.backend, checkpoints_root=tmp_path)
+
+
+def test_produce_rejects_a_calibrating_variant_with_no_seed(tmp_path: Path) -> None:
+    """The draw has to be recorded, or two different checkpoints hash identically."""
+    resolved = resolve_config(CONFIG_ROOT / "variants" / "int4-gptq.yaml", config_root=CONFIG_ROOT)
+    assert resolved.variant.quant is not None
+    seedless = replace(
+        resolved.variant, quant=replace(resolved.variant.quant, calibration_seed=None)
+    )
+    with pytest.raises(ValueError, match="no calibration_seed"):
+        produce_compressed_tensors(seedless, resolved.backend, checkpoints_root=tmp_path)

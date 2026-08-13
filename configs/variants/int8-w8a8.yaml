@@ -12,4 +12,5 @@ quant:
   group_size: -1
   calibration_corpus: in_domain
   calibration_samples: 512
+  calibration_seed: 620       # the draw that selects the samples; hashed with the corpus
 # Calibration set must be disjoint from the ECE eval set to avoid leakage.

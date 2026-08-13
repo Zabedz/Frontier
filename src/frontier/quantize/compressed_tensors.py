@@ -18,11 +18,10 @@ from frontier.quantize.paths import checkpoint_path
 from frontier.quantize.recipes import recipe_for, to_modifiers
 from frontier.schema import VariantConfig
 
-# Calibration defaults shared by every compressed-tensors variant. The sample count is a
-# per-variant config field; the sequence length and the producer seed are fixed so the
-# only calibration difference between two variants is the corpus (the WP6 axis).
+# The sequence length is fixed across variants so the only calibration difference between
+# two of them is the corpus and the draw, both of which are per-variant config fields and
+# both of which land in the config hash. That is what makes the WP6 corpus contrast clean.
 CALIB_SEQ_LEN = 2048
-DEFAULT_SEED = 42
 
 _COMPLETION_MARKERS = ("config.json", "recipe.yaml")
 
@@ -32,33 +31,48 @@ def produce_compressed_tensors(
     backend: Mapping[str, Any],
     *,
     checkpoints_root: Path,
-    seed: int = DEFAULT_SEED,
 ) -> Path:
     """Quantise ``variant`` with llm-compressor and write a compressed-tensors checkpoint.
 
     Loads the base model (bf16, ``device_map="auto"``) and tokenizer, builds the
-    calibration dataset from ``variant.quant.calibration_corpus``, runs ``oneshot`` with
-    the variant's recipe, and saves to ``checkpoint_path``. Returns the output path.
-    Idempotent: returns early when the checkpoint already carries a ``config.json`` and a
-    ``recipe.yaml``. Raises ``ValueError`` if the variant has no ``quant`` block.
+    calibration dataset from ``variant.quant.calibration_corpus`` at
+    ``variant.quant.calibration_seed``, runs ``oneshot`` with the variant's recipe, and
+    saves to ``checkpoint_path``. Returns the output path. Idempotent: returns early when
+    the checkpoint already carries a ``config.json`` and a ``recipe.yaml``.
+
+    The seed comes from the config so that the draw is covered by the config hash and the
+    stored provenance. Two checkpoints built from different draws are then distinguishable
+    in the store.
+
+    Raises
+    ------
+    ValueError
+        If the variant has no ``quant`` block, or names a calibration corpus without a
+        ``calibration_seed``.
     """
     if variant.quant is None:
         raise ValueError(f"variant {variant.name!r} has no quant block to compress")
+    if variant.quant.calibration_corpus != "none" and variant.quant.calibration_seed is None:
+        raise ValueError(
+            f"variant {variant.name!r} calibrates on the {variant.quant.calibration_corpus!r} "
+            f"corpus but sets no calibration_seed; the draw would go unrecorded"
+        )
     out = checkpoint_path(variant, backend, root=checkpoints_root)
     if _is_complete(out):
         return out
-    return _run_oneshot(variant, out, seed=seed)  # pragma: no cover
+    return _run_oneshot(variant, out)  # pragma: no cover
 
 
 def _is_complete(out: Path) -> bool:
     return out.is_dir() and all((out / marker).exists() for marker in _COMPLETION_MARKERS)
 
 
-def _run_oneshot(variant: VariantConfig, out: Path, *, seed: int) -> Path:  # pragma: no cover
+def _run_oneshot(variant: VariantConfig, out: Path) -> Path:  # pragma: no cover
     from llmcompressor import oneshot  # noqa: PLC0415
     from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: PLC0415
 
     assert variant.quant is not None  # narrowed by the caller; kept for the type checker
+    assert variant.quant.calibration_seed is not None  # narrowed by the caller
     model = AutoModelForCausalLM.from_pretrained(
         variant.model.model_id, dtype="auto", device_map="auto"
     )
@@ -68,7 +82,7 @@ def _run_oneshot(variant: VariantConfig, out: Path, *, seed: int) -> Path:  # pr
         tokenizer,
         num_samples=variant.quant.calibration_samples,
         max_seq_length=CALIB_SEQ_LEN,
-        seed=seed,
+        seed=variant.quant.calibration_seed,
     )
     oneshot(
         model=model,
