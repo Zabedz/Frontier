@@ -21,10 +21,12 @@ from frontier.pipeline.runner import run as run_pipeline
 from frontier.schema import ResultRow, RunMode
 
 if TYPE_CHECKING:
+    import pandas as pd
+
     from frontier.analysis._skipped import Skipped
     from frontier.analysis.frontier_chart import ColorBy
     from frontier.analysis.load import XCost
-    from frontier.analysis.repairability import Repairability
+    from frontier.analysis.repairability import Repairability, RepairabilityPair
     from frontier.analysis.significance import PairSignificance
 
 # The analysis stack pulls matplotlib and pandas, so `plot` imports it in the body to keep
@@ -241,6 +243,9 @@ def recalibrate(
     bins: Annotated[int, typer.Option("--bins", help="Bin count for the reported ECE.")] = (
         DEFAULT_BINS
     ),
+    resamples: Annotated[
+        int, typer.Option("--resamples", help="Bootstrap resamples for the residual interval.")
+    ] = DEFAULT_RESAMPLES,
     out: Annotated[
         Path | None,
         typer.Option("--out", help="Parquet output (default: <results>/recalibration.parquet)."),
@@ -250,20 +255,27 @@ def recalibrate(
 
     The fit uses the held-out split's fit half, the numbers come from its report half.
     """
-    from frontier.analysis import load_tidy, repairability_table  # noqa: PLC0415
-    from frontier.analysis.repairability import to_frame  # noqa: PLC0415
+    from frontier.analysis import load_references, load_tidy, repairability_table  # noqa: PLC0415
+    from frontier.analysis.repairability import (  # noqa: PLC0415
+        pairs_to_frame,
+        repairability_pairs,
+        to_frame,
+    )
 
     store = ResultStore(results)
-    found, skipped = repairability_table(
-        load_tidy(store, task_name=task), root=results, n_bins=bins
-    )
+    tidy = load_tidy(store, task_name=task)
+    found, skipped = repairability_table(tidy, root=results, n_bins=bins)
     destination = out if out is not None else results / "recalibration.parquet"
     if found:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        staging = destination.with_suffix(destination.suffix + ".tmp")
-        to_frame(found).to_parquet(staging)
-        staging.replace(destination)
+        _write_parquet(to_frame(found), destination)
+    paired, pair_skipped = repairability_pairs(
+        tidy, root=results, references=load_references(), n_bins=bins, n_resamples=resamples
+    )
+    pairs_destination = destination.with_name(f"{destination.stem}_pairs.parquet")
+    if paired:
+        _write_parquet(pairs_to_frame(paired), pairs_destination)
     _summarise_recalibration(found, skipped, destination if found else None)
+    _summarise_repairability_pairs(paired, pair_skipped, pairs_destination if paired else None)
 
 
 def _parse_mode(value: str) -> RunMode:
@@ -404,6 +416,43 @@ def _summarise_recalibration(
     _console.print(table)
     if destination is not None:
         _console.print(f"wrote {destination}")
+
+
+def _write_parquet(frame: pd.DataFrame, destination: Path) -> None:
+    """Stage then replace, so a crash part way through leaves the previous table."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = destination.with_suffix(destination.suffix + ".tmp")
+    frame.to_parquet(staging)
+    staging.replace(destination)
+
+
+def _summarise_repairability_pairs(
+    found: list[RepairabilityPair], skipped: list[Skipped], destination: Path | None
+) -> None:
+    for skip in skipped:
+        _console.print(f"[yellow]no residual pair for {skip.variant}: {skip.reason}[/yellow]")
+    if not found:
+        return
+    table = Table(title="Residual after repair, against the backend reference")
+    for column in ("pair", "residual", "reference", "gap", "beyond noise"):
+        table.add_column(column, overflow="fold")
+    for item in found:
+        gap = item.residual_gap
+        table.add_row(
+            item.pair.label,
+            f"{item.residual_variant:.4f}",
+            f"{item.residual_reference:.4f}",
+            _interval(gap.point, gap.low, gap.high),
+            "yes" if item.variant_is_less_repairable else "no",
+        )
+    _console.print(table)
+    for item in found:
+        if not item.residual_gap.usable:
+            _console.print(
+                f"  [yellow]{item.pair.label}: {item.residual_gap.refused_resamples} of "
+                f"{item.residual_gap.n_resamples} resamples refused a fit[/yellow]"
+            )
+    _console.print(f"wrote {destination}")
 
 
 def _summarise_plots(written: list[Path], plots_dir: Path) -> None:

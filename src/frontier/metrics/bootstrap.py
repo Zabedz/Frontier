@@ -16,9 +16,19 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.stats import DegenerateDataWarning, bootstrap  # type: ignore[import-untyped]
 
-from frontier.metrics._array import CorrectArray, FloatArray
+from frontier.metrics._array import CorrectArray, FloatArray, IntArray, LabelArray, ProbMatrix
 from frontier.metrics.binning import BinScheme
-from frontier.metrics.calibration import DEFAULT_BINS, Weighting, ece_from_confidence
+from frontier.metrics.calibration import (
+    DEFAULT_BINS,
+    Weighting,
+    ece_from_confidence,
+    top_label,
+)
+from frontier.metrics.recalibration import (
+    TemperatureFitError,
+    apply_temperature,
+    fit_temperature,
+)
 
 DEFAULT_RESAMPLES = 9999
 
@@ -361,4 +371,123 @@ def paired_damage_ratio_ci(
         ),
         nonfinite_resamples=nonfinite,
         n_resamples=int(distribution.size),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ScoredItems:
+    """One half of one variant's held-out split, as the recalibration statistic needs it."""
+
+    probs: ProbMatrix
+    gold: LabelArray
+    n_options: IntArray
+
+
+@dataclass(frozen=True, slots=True)
+class ResidualInterval:
+    """A difference of post-recalibration ECEs, with the resamples that refused a fit."""
+
+    point: float
+    low: float
+    high: float
+    refused_resamples: int
+    n_resamples: int
+
+    @property
+    def excludes_zero(self) -> bool:
+        if not (math.isfinite(self.low) and math.isfinite(self.high)):
+            return False
+        return self.low > 0.0 or self.high < 0.0
+
+    @property
+    def usable(self) -> bool:
+        """Whether every resample produced a temperature."""
+        return self.refused_resamples == 0
+
+
+def _residual_ece(
+    fit: ScoredItems,
+    report: ScoredItems,
+    fit_rows: IntArray,
+    report_rows: IntArray,
+    *,
+    n_bins: int,
+) -> float:
+    """ECE on the report rows after a temperature fitted on the fit rows."""
+    temperature = fit_temperature(fit.probs[fit_rows], fit.gold[fit_rows], fit.n_options[fit_rows])
+    scaled = apply_temperature(
+        report.probs[report_rows], temperature, report.n_options[report_rows]
+    )
+    confidence, correct = top_label(scaled, report.gold[report_rows])
+    return ece_from_confidence(confidence, correct, n_bins=n_bins)
+
+
+def paired_residual_ece_ci(
+    reference_fit: ScoredItems,
+    reference_report: ScoredItems,
+    variant_fit: ScoredItems,
+    variant_report: ScoredItems,
+    *,
+    n_bins: int = DEFAULT_BINS,
+    confidence_level: float = 0.95,
+    n_resamples: int = DEFAULT_RESAMPLES,
+    rng: np.random.Generator | int | None = None,
+) -> ResidualInterval:
+    """Interval on ``residual(variant) - residual(reference)`` after recalibrating each.
+
+    Resamples the fit half and the report half separately, because they hold different
+    items, and shares each index vector across the two variants so the difference stays
+    paired. The temperature is refitted inside every resample: holding it at its full
+    sample value would report the residual as if the fit were free of error, and the fit
+    noise is what puts a perfectly calibrated model's removed fraction near -13%.
+
+    ``scipy.stats.bootstrap`` takes one index vector across every array it is given, so it
+    cannot express a statistic drawing from two samples of different length.
+
+    A resample whose fit refuses (see ``TemperatureFitError``) is counted and dropped; the
+    interval comes from the resamples that produced a temperature, and ``usable`` is False
+    whenever any refused.
+    """
+    if reference_report.gold.shape[0] != variant_report.gold.shape[0]:
+        raise ValueError(
+            f"report halves differ in length: reference {reference_report.gold.shape[0]}, "
+            f"variant {variant_report.gold.shape[0]}"
+        )
+    if reference_fit.gold.shape[0] != variant_fit.gold.shape[0]:
+        raise ValueError(
+            f"fit halves differ in length: reference {reference_fit.gold.shape[0]}, "
+            f"variant {variant_fit.gold.shape[0]}"
+        )
+    generator = _normalise_rng(rng) or np.random.default_rng()
+    n_fit = reference_fit.gold.shape[0]
+    n_report = reference_report.gold.shape[0]
+    point = _residual_ece(
+        variant_fit, variant_report, np.arange(n_fit), np.arange(n_report), n_bins=n_bins
+    ) - _residual_ece(
+        reference_fit, reference_report, np.arange(n_fit), np.arange(n_report), n_bins=n_bins
+    )
+    drawn: list[float] = []
+    refused = 0
+    for _ in range(n_resamples):
+        fit_rows = generator.integers(0, n_fit, size=n_fit)
+        report_rows = generator.integers(0, n_report, size=n_report)
+        try:
+            drawn.append(
+                _residual_ece(variant_fit, variant_report, fit_rows, report_rows, n_bins=n_bins)
+                - _residual_ece(
+                    reference_fit, reference_report, fit_rows, report_rows, n_bins=n_bins
+                )
+            )
+        except TemperatureFitError:
+            refused += 1
+    if not drawn:  # defensive: the full-sample fit above refuses before this can happen
+        raise TemperatureFitError(f"every one of {n_resamples} resamples refused a temperature fit")
+    alpha = (1.0 - confidence_level) / 2.0
+    low, high = np.quantile(np.asarray(drawn), [alpha, 1.0 - alpha])
+    return ResidualInterval(
+        point=point,
+        low=float(low),
+        high=float(high),
+        refused_resamples=refused,
+        n_resamples=n_resamples,
     )

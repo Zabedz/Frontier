@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
-from frontier.metrics._array import FloatArray, IntArray, ProbMatrix
+from frontier.metrics._array import FloatArray, IntArray, LabelArray, ProbMatrix
+from frontier.metrics.bootstrap import (
+    ResidualInterval,
+    ScoredItems,
+    paired_residual_ece_ci,
+)
 from frontier.metrics.recalibration import (
+    TemperatureFitError,
     apply_temperature,
     fit_temperature,
     temperature_nll,
@@ -227,3 +235,106 @@ def test_the_fit_agrees_with_netcal_temperature_scaling() -> None:
         apply_temperature(overconfident, ours, counts),
         atol=1e-4,
     )
+
+
+def _scored(probs: ProbMatrix, gold: LabelArray) -> ScoredItems:
+    return ScoredItems(probs=probs, gold=gold, n_options=_full(probs.shape[0], probs.shape[1]))
+
+
+def _sample(n: int, *, seed: int) -> tuple[FloatArray, LabelArray]:
+    rng = np.random.default_rng(seed)
+    logits = rng.normal(0.0, 2.0, size=(n, N_CLASSES))
+    gold = np.asarray([rng.choice(N_CLASSES, p=row) for row in _softmax(logits)], dtype=np.intp)
+    return logits, gold
+
+
+def test_the_residual_gap_is_exactly_zero_between_monotone_transforms() -> None:
+    """Both variants scale into the same distribution, so every resample cancels.
+
+    A shared index vector across the two variants is what makes the cancellation exact; an
+    unpaired resample would leave noise here. The residual 1e-7 is the optimiser's own
+    ``xatol`` of 1e-5 on the two temperatures, four orders below the ECE scale.
+    """
+    logits, gold = _sample(1500, seed=41)
+    fit, report = slice(0, 500), slice(500, 1500)
+    interval = paired_residual_ece_ci(
+        _scored(_softmax(logits)[fit], gold[fit]),
+        _scored(_softmax(logits)[report], gold[report]),
+        _scored(_softmax(logits / 0.45)[fit], gold[fit]),
+        _scored(_softmax(logits / 0.45)[report], gold[report]),
+        n_resamples=199,
+        rng=3,
+    )
+    assert interval.point == pytest.approx(0.0, abs=1e-9)
+    assert interval.low == pytest.approx(0.0, abs=1e-5)
+    assert interval.high == pytest.approx(0.0, abs=1e-5)
+    assert not interval.excludes_zero
+    assert interval.usable
+
+
+def test_a_genuinely_different_variant_gets_a_wide_interval() -> None:
+    logits, gold = _sample(1500, seed=42)
+    noisy = logits / 0.45 + np.random.default_rng(9).normal(0.0, 1.5, size=logits.shape)
+    fit, report = slice(0, 500), slice(500, 1500)
+    interval = paired_residual_ece_ci(
+        _scored(_softmax(logits)[fit], gold[fit]),
+        _scored(_softmax(logits)[report], gold[report]),
+        _scored(_softmax(noisy)[fit], gold[fit]),
+        _scored(_softmax(noisy)[report], gold[report]),
+        n_resamples=199,
+        rng=3,
+    )
+    assert interval.high > interval.low
+    assert interval.low <= interval.point <= interval.high
+
+
+def test_report_halves_of_different_length_are_rejected() -> None:
+    logits, gold = _sample(600, seed=43)
+    probs = _softmax(logits)
+    with pytest.raises(ValueError, match="report halves differ"):
+        paired_residual_ece_ci(
+            _scored(probs[:200], gold[:200]),
+            _scored(probs[200:600], gold[200:600]),
+            _scored(probs[:200], gold[:200]),
+            _scored(probs[200:500], gold[200:500]),
+            n_resamples=9,
+            rng=1,
+        )
+
+
+def test_fit_halves_of_different_length_are_rejected() -> None:
+    logits, gold = _sample(600, seed=44)
+    probs = _softmax(logits)
+    with pytest.raises(ValueError, match="fit halves differ"):
+        paired_residual_ece_ci(
+            _scored(probs[:200], gold[:200]),
+            _scored(probs[200:600], gold[200:600]),
+            _scored(probs[:150], gold[:150]),
+            _scored(probs[200:600], gold[200:600]),
+            n_resamples=9,
+            rng=1,
+        )
+
+
+def test_a_pair_outside_the_scalable_range_raises_rather_than_reporting() -> None:
+    """The full-sample fit refuses first, so no interval is produced at all."""
+    logits, gold = _sample(900, seed=45)
+    far = logits / 0.02  # optimum near T = 50, past the upper bound at every resample
+    fit, report = slice(0, 300), slice(300, 900)
+    with pytest.raises(TemperatureFitError, match=r"ran to the bound|every one of"):
+        paired_residual_ece_ci(
+            _scored(_softmax(far)[fit], gold[fit]),
+            _scored(_softmax(far)[report], gold[report]),
+            _scored(_softmax(far)[fit], gold[fit]),
+            _scored(_softmax(far)[report], gold[report]),
+            n_resamples=19,
+            rng=2,
+        )
+
+
+def test_a_non_finite_residual_interval_never_claims_to_exclude_zero() -> None:
+    degenerate = ResidualInterval(
+        point=math.nan, low=math.nan, high=math.nan, refused_resamples=3, n_resamples=10
+    )
+    assert not degenerate.excludes_zero
+    assert not degenerate.usable

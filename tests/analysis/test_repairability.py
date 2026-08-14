@@ -12,14 +12,19 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from frontier.analysis.holdout import NotRecalibratableError
 from frontier.analysis.load import load_split_predictions, load_tidy
 from frontier.analysis.repairability import (
     REPORT_FLOOR,
     Repairability,
+    check_report_alignment,
     fingerprint,
+    pairs_to_frame,
+    repairability_pairs,
     repairability_table,
     to_frame,
 )
+from frontier.analysis.significance import VariantPair
 from frontier.io.predictions import (
     CorruptSidecarError,
     LabelArray,
@@ -236,3 +241,110 @@ def test_the_removed_fraction_is_nan_on_a_zero_denominator() -> None:
         accuracy=1.0,
     )
     assert np.isnan(degenerate.ece_removed_fraction)
+
+
+def test_a_pair_against_the_backend_reference_gets_an_interval(tmp_path: Path) -> None:
+    store, root = _store(tmp_path, {"fp16": 1.0, "int4-nf4": SHARPEN})
+    found, skipped = repairability_pairs(
+        load_tidy(store), root=root, references={"hf": "fp16"}, n_resamples=99
+    )
+    assert [item.pair.variant for item in found] == ["int4-nf4"]
+    assert any("is the reference" in skip.reason for skip in skipped)
+    gap = found[0].residual_gap
+    assert gap.low <= gap.point <= gap.high
+    assert gap.usable
+
+
+def test_a_monotone_transform_pair_shows_no_difference_beyond_noise(tmp_path: Path) -> None:
+    """Both scale into the same distribution, so the gap must not be called a finding."""
+    store, root = _store(tmp_path, {"fp16": 1.0, "int4-nf4": SHARPEN})
+    found, _ = repairability_pairs(
+        load_tidy(store), root=root, references={"hf": "fp16"}, n_resamples=99
+    )
+    assert not found[0].variant_is_less_repairable
+    assert not found[0].residual_gap.excludes_zero
+
+
+def test_report_halves_over_different_items_are_refused(tmp_path: Path) -> None:
+    store, root = _store(
+        tmp_path,
+        {"fp16": 1.0, "int4-nf4": SHARPEN},
+        item_ids={
+            "fp16": [f"q{index}" for index in range(N_ITEMS)],
+            "int4-nf4": [f"other{index}" for index in range(N_ITEMS)],
+        },
+    )
+    found, skipped = repairability_pairs(
+        load_tidy(store), root=root, references={"hf": "fp16"}, n_resamples=19
+    )
+    assert found == []
+    assert any("different items" in skip.reason for skip in skipped)
+
+
+def test_check_report_alignment_falls_back_to_length_without_ids() -> None:
+    pair = VariantPair(variant="int4-nf4", reference="fp16", task="mmlu", backend="hf", track="A")
+    short = PredictionRows(
+        np.zeros(3),
+        np.zeros(3, dtype=np.bool_),
+        np.zeros(3, dtype=np.intp),
+        np.zeros(3, dtype=np.intp),
+        None,
+        None,
+    )
+    long = PredictionRows(
+        np.zeros(4),
+        np.zeros(4, dtype=np.bool_),
+        np.zeros(4, dtype=np.intp),
+        np.zeros(4, dtype=np.intp),
+        None,
+        None,
+    )
+    check_report_alignment(pair, short, short)
+    with pytest.raises(NotRecalibratableError, match="differ in length"):
+        check_report_alignment(pair, short, long)
+
+
+def test_pairs_to_frame_carries_the_interval_and_the_verdict(tmp_path: Path) -> None:
+    store, root = _store(tmp_path, {"fp16": 1.0, "int4-nf4": SHARPEN})
+    found, _ = repairability_pairs(
+        load_tidy(store), root=root, references={"hf": "fp16"}, n_resamples=99
+    )
+    frame = pairs_to_frame(found)
+    assert {
+        "variant",
+        "reference",
+        "residual_variant",
+        "residual_reference",
+        "residual_gap",
+        "residual_gap_low",
+        "residual_gap_high",
+        "residual_gap_excludes_zero",
+        "variant_is_less_repairable",
+        "refused_resamples",
+    } <= set(frame.columns)
+
+
+def test_a_sidecar_with_ids_but_no_distributions_is_skipped_in_the_pair_layer(
+    tmp_path: Path,
+) -> None:
+    store, root = _store(tmp_path, {"fp16": 1.0, "int4-nf4": SHARPEN})
+    rng = np.random.default_rng(1)
+    probs = _softmax(rng.normal(0.0, 2.0, size=(N_ITEMS, 4)))
+    predicted = probs.argmax(axis=1).astype(np.intp)
+    write_predictions_rows(
+        PredictionRows(
+            confidence=probs.max(axis=1),
+            correct=np.ones(N_ITEMS, dtype=np.bool_),
+            gold=predicted,
+            predicted=predicted,
+            options=None,
+            qid=np.asarray([f"q{index}" for index in range(N_ITEMS)], dtype=np.str_),
+        ),
+        root=root,
+        key=predictions_key("1" * 64, 0, "mmlu"),
+    )
+    found, skipped = repairability_pairs(
+        load_tidy(store), root=root, references={"hf": "fp16"}, n_resamples=19
+    )
+    assert found == []
+    assert any("no stored distributions" in skip.reason for skip in skipped)

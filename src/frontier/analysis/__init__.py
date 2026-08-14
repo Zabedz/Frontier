@@ -38,8 +38,11 @@ from frontier.analysis.reliability import (
 )
 from frontier.analysis.repairability import (
     Repairability,
+    RepairabilityPair,
     fingerprint,
+    pairs_to_frame,
     repairability,
+    repairability_pairs,
     repairability_table,
 )
 from frontier.analysis.significance import (
@@ -62,6 +65,7 @@ __all__ = [
     "NotRecalibratableError",
     "PairSignificance",
     "Repairability",
+    "RepairabilityPair",
     "Skipped",
     "VariantPair",
     "XAxisSpec",
@@ -80,12 +84,14 @@ __all__ = [
     "load_split_predictions",
     "load_tidy",
     "pair_significance",
+    "pairs_to_frame",
     "pareto_mask",
     "pareto_order",
     "prediction_labels",
     "reliability_figure",
     "reliability_gallery",
     "repairability",
+    "repairability_pairs",
     "repairability_table",
     "resolve_pairs",
     "significance_table",
