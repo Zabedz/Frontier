@@ -22,6 +22,7 @@ from frontier.metrics.bootstrap import (
     paired_damage_gap_ci,
     paired_damage_ratio_ci,
     paired_delta_accuracy_ci,
+    paired_delta_confidence_ci,
     paired_delta_ece_ci,
     paired_residual_ece_ci,
     relative_damages,
@@ -393,3 +394,37 @@ def test_fit_halves_of_different_length_are_refused() -> None:
     short = ScoredItems(probs=fit.probs[:-1], gold=fit.gold[:-1], n_options=fit.n_options[:-1])
     with pytest.raises(ValueError, match="fit halves differ in length"):
         paired_residual_ece_ci(short, report, fit, report, n_resamples=19, rng=0)
+
+
+def test_delta_confidence_point_is_the_mean_shift_and_is_bracketed() -> None:
+    reference = make_calibrated_confidence(3000, np.random.default_rng(11))[0]
+    variant = np.clip(reference + 0.05, 0.0, 1.0)
+    interval = paired_delta_confidence_ci(reference, variant, n_resamples=RESAMPLES, rng=3)
+    assert interval.point == pytest.approx(float(variant.mean() - reference.mean()))
+    assert interval.low <= interval.point <= interval.high
+    assert interval.excludes_zero
+
+
+def test_delta_confidence_is_exactly_zero_for_a_variant_that_says_the_same_thing() -> None:
+    """The pairing regression: independent resampling would put width on a zero delta."""
+    reference = make_calibrated_confidence(2000, np.random.default_rng(12))[0]
+    interval = paired_delta_confidence_ci(reference, reference.copy(), n_resamples=199, rng=3)
+    assert interval.point == 0.0
+    assert interval.low == 0.0
+    assert interval.high == 0.0
+    assert not interval.excludes_zero
+
+
+def test_delta_confidence_is_blind_to_correctness() -> None:
+    """The statistic the ECE delta cannot separate: same answers, different confidence.
+
+    Correctness is untouched between the two calls, so an implementation that reached for
+    it would move this interval.
+    """
+    reference = make_calibrated_confidence(2000, np.random.default_rng(13))[0]
+    variant = np.clip(reference - 0.03, 0.0, 1.0)
+    first = paired_delta_confidence_ci(reference, variant, n_resamples=199, rng=3)
+    second = paired_delta_confidence_ci(reference, variant, n_resamples=199, rng=3)
+    assert first == second
+    assert first.point < 0.0
+    assert first.excludes_zero

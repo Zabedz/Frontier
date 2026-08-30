@@ -366,7 +366,15 @@ def _summarise_significance(
         _console.print("[yellow]no pairs to test[/yellow]")
         return
     table = Table(title="Paired significance (variant against its backend reference)")
-    for column in ("pair", "n", "d accuracy", "d ECE", "damage gap", "damage ratio"):
+    for column in (
+        "pair",
+        "n",
+        "d accuracy",
+        "d confidence",
+        "d ECE",
+        "damage gap",
+        "damage ratio",
+    ):
         table.add_column(column, overflow="fold")
     for item in found:
         ratio = item.damage_ratio
@@ -379,6 +387,11 @@ def _summarise_significance(
             item.pair.label,
             str(item.n_items),
             _interval(item.delta_accuracy.point, item.delta_accuracy.low, item.delta_accuracy.high),
+            _interval(
+                item.delta_confidence.point,
+                item.delta_confidence.low,
+                item.delta_confidence.high,
+            ),
             _interval(item.delta_ece.point, item.delta_ece.low, item.delta_ece.high),
             _interval(item.damage_gap.point, item.damage_gap.low, item.damage_gap.high, places=3),
             ratio_cell,
@@ -391,6 +404,20 @@ def _summarise_significance(
             else "no separation between the two damages"
         )
         _console.print(f"  {item.pair.label}: {verdict}")
+        if item.damage_gap.excludes_zero and item.damage_gap.point > 0.0:
+            moved = _interval(
+                item.delta_confidence.point,
+                item.delta_confidence.low,
+                item.delta_confidence.high,
+            )
+            if item.confidence_shifted:
+                _console.print(f"    confidence moved {moved}")
+            else:
+                _console.print(
+                    f"    [yellow]confidence did not move ({moved}), so the ECE delta follows "
+                    "from the accuracy loss on an overconfident baseline and says nothing "
+                    "about calibration itself[/yellow]"
+                )
         if not item.delta_ece_sign_stable:
             _console.print(
                 "    [yellow]the ECE delta changes sign across the bin sweep, so no single "

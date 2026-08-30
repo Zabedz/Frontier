@@ -26,6 +26,7 @@ from frontier.metrics.bootstrap import (
     paired_damage_gap_ci,
     paired_damage_ratio_ci,
     paired_delta_accuracy_ci,
+    paired_delta_confidence_ci,
     paired_delta_ece_ci,
 )
 from frontier.metrics.calibration import DEFAULT_BINS, DEFAULT_SWEEP
@@ -57,16 +58,28 @@ class PairSignificance:
     calibration degrades faster and the ratio by what multiple. ``delta_ece_sweep``
     repeats the ECE delta at each sweep bin count plus the headline count, since an ECE
     delta that changes sign with the bin count supports no claim at a single count.
+
+    ``delta_confidence`` is the control on all of it. A uniformly overconfident model has
+    an ECE that tracks mean confidence minus accuracy, so its ECE delta follows from the
+    accuracy delta alone and the damage ratio settles near accuracy over ECE with nothing
+    said about confidence. Only ``delta_confidence`` distinguishes a model that grew
+    overconfident from one that got more answers wrong.
     """
 
     pair: VariantPair
     n_items: int
     n_bins: int
     delta_accuracy: ConfidenceInterval
+    delta_confidence: ConfidenceInterval
     delta_ece: ConfidenceInterval
     damage_gap: ConfidenceInterval
     damage_ratio: RatioInterval
     delta_ece_sweep: dict[int, ConfidenceInterval]
+
+    @property
+    def confidence_shifted(self) -> bool:
+        """Whether compression moved what the model says about itself, beyond noise."""
+        return self.delta_confidence.excludes_zero
 
     @property
     def delta_ece_sign_stable(self) -> bool:
@@ -182,6 +195,13 @@ def pair_significance(
         n_resamples=n_resamples,
         rng=rng,
     )
+    delta_confidence = paired_delta_confidence_ci(
+        reference_rows.confidence,
+        variant_rows.confidence,
+        confidence_level=confidence_level,
+        n_resamples=n_resamples,
+        rng=rng,
+    )
     damage_gap = paired_damage_gap_ci(
         *arrays,
         n_bins=n_bins,
@@ -212,6 +232,7 @@ def pair_significance(
         n_items=int(reference_rows.gold.shape[0]),
         n_bins=n_bins,
         delta_accuracy=delta_accuracy,
+        delta_confidence=delta_confidence,
         delta_ece=sweep[n_bins],
         damage_gap=damage_gap,
         damage_ratio=damage_ratio,
@@ -278,6 +299,10 @@ def to_frame(results: Sequence[PairSignificance]) -> pd.DataFrame:
             "delta_accuracy": item.delta_accuracy.point,
             "delta_accuracy_low": item.delta_accuracy.low,
             "delta_accuracy_high": item.delta_accuracy.high,
+            "delta_confidence": item.delta_confidence.point,
+            "delta_confidence_low": item.delta_confidence.low,
+            "delta_confidence_high": item.delta_confidence.high,
+            "confidence_shifted": item.confidence_shifted,
             "delta_ece": item.delta_ece.point,
             "delta_ece_low": item.delta_ece.low,
             "delta_ece_high": item.delta_ece.high,

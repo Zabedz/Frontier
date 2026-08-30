@@ -334,6 +334,7 @@ def test_pair_significance_points_from_the_reference_to_the_variant() -> None:
         n_resamples=RESAMPLES,
     )
     assert outcome.delta_accuracy.point < 0.0
+    assert outcome.delta_confidence.point > 0.0
     assert outcome.delta_ece.point > 0.0
     assert outcome.damage_gap.point > 0.0
     assert outcome.damage_ratio.point > 1.0
@@ -347,6 +348,7 @@ def test_pair_significance_flips_every_sign_when_the_arguments_are_swapped() -> 
         _pair(), worse, reference, n_bins=10, sweep_bins=(10,), n_resamples=RESAMPLES
     )
     assert mirrored.delta_accuracy.point > 0.0
+    assert mirrored.delta_confidence.point < 0.0
     assert mirrored.delta_ece.point < 0.0
     assert mirrored.damage_gap.point < 0.0
 
@@ -429,6 +431,10 @@ def test_to_frame_column_contract_is_stable() -> None:
         "delta_accuracy",
         "delta_accuracy_low",
         "delta_accuracy_high",
+        "delta_confidence",
+        "delta_confidence_low",
+        "delta_confidence_high",
+        "confidence_shifted",
         "delta_ece",
         "delta_ece_low",
         "delta_ece_high",
@@ -453,3 +459,50 @@ def test_to_frame_column_contract_is_stable() -> None:
         outcome.delta_ece_sweep[10].high,
     )
     assert low <= point <= high
+
+
+def _less_accurate_only(rows: PredictionRows, *, flips: int = 120) -> PredictionRows:
+    """The same stated confidence, more answers wrong. The confidence-invariant null."""
+    correct = rows.correct.copy()
+    correct[np.flatnonzero(rows.correct)[:flips]] = False
+    return PredictionRows(
+        rows.confidence.copy(), correct, rows.gold, rows.predicted, options=None, qid=None
+    )
+
+
+def test_confidence_is_flat_when_only_accuracy_moved() -> None:
+    """The control the damage ratio needs.
+
+    An overconfident model that only loses accuracy still shows an ECE delta and a damage
+    gap, because ECE tracks mean confidence minus accuracy. Nothing was said about the
+    model's confidence, and this is the statistic that reports that.
+    """
+    gold = _gold()
+    reference = _predictions(gold, seed=1)
+    outcome = pair_significance(
+        _pair(),
+        reference,
+        _less_accurate_only(reference),
+        n_bins=10,
+        sweep_bins=(10,),
+        n_resamples=RESAMPLES,
+    )
+    assert outcome.delta_accuracy.point < 0.0
+    assert outcome.delta_confidence.point == 0.0
+    assert not outcome.confidence_shifted
+    assert not outcome.delta_confidence.excludes_zero
+
+
+def test_confidence_shifted_reports_a_real_overconfidence_move() -> None:
+    gold = _gold()
+    reference = _predictions(gold, seed=1)
+    outcome = pair_significance(
+        _pair(),
+        reference,
+        _worse_than(reference),
+        n_bins=10,
+        sweep_bins=(10,),
+        n_resamples=RESAMPLES,
+    )
+    assert outcome.confidence_shifted
+    assert outcome.delta_confidence.excludes_zero

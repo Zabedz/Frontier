@@ -175,6 +175,39 @@ def paired_delta_accuracy_ci(
     return ConfidenceInterval(point=point, low=float(interval.low), high=float(interval.high))
 
 
+def paired_delta_confidence_ci(
+    confidence_a: FloatArray,
+    confidence_b: FloatArray,
+    *,
+    confidence_level: float = 0.95,
+    n_resamples: int = DEFAULT_RESAMPLES,
+    rng: np.random.Generator | int | None = None,
+) -> ConfidenceInterval:
+    """Percentile bootstrap interval on the paired mean-confidence delta ``b - a``.
+
+    The ECE delta cannot tell a model that grew overconfident from one that simply got more
+    answers wrong. This separates them: it moves only when compression changed what the
+    model says about itself. See methodology section 6.
+    """
+    point = float(np.mean(confidence_b) - np.mean(confidence_a))
+
+    def statistic(resampled_a: FloatArray, resampled_b: FloatArray) -> float:
+        return float(np.mean(resampled_b) - np.mean(resampled_a))
+
+    result = bootstrap(
+        (confidence_a, confidence_b),
+        statistic,
+        paired=True,
+        vectorized=False,
+        n_resamples=n_resamples,
+        confidence_level=confidence_level,
+        method="percentile",
+        rng=_normalise_rng(rng),
+    )
+    interval = result.confidence_interval
+    return ConfidenceInterval(point=point, low=float(interval.low), high=float(interval.high))
+
+
 def paired_delta_ece_ci(
     confidence_a: FloatArray,
     correct_a: CorrectArray,
