@@ -202,16 +202,11 @@ def significance(
     The damage gap says whether calibration degrades faster than accuracy; the damage
     ratio says by what multiple.
     """
-    from frontier.analysis import (  # noqa: PLC0415
-        load_references,
-        load_tidy,
-        significance_table,
-        to_frame,
-    )
+    from frontier.analysis import load_tidy, significance_table, to_frame  # noqa: PLC0415
 
     store = ResultStore(results)
     tidy = load_tidy(store, task_name=task)
-    reference_map = load_references() if references is None else load_references(references)
+    reference_map = _reference_map(references)
     found, skipped = significance_table(
         tidy,
         root=results,
@@ -240,6 +235,15 @@ def recalibrate(
     task: Annotated[
         str | None, typer.Option("--task", help="Restrict to one task_name (default: all).")
     ] = None,
+    references: Annotated[
+        Path | None,
+        typer.Option(
+            "--references",
+            exists=True,
+            dir_okay=False,
+            help="Backend-to-reference map (default: configs/analysis/significance.yaml).",
+        ),
+    ] = None,
     bins: Annotated[int, typer.Option("--bins", help="Bin count for the reported ECE.")] = (
         DEFAULT_BINS
     ),
@@ -255,13 +259,14 @@ def recalibrate(
 
     The fit uses the held-out split's fit half, the numbers come from its report half.
     """
-    from frontier.analysis import load_references, load_tidy, repairability_table  # noqa: PLC0415
+    from frontier.analysis import load_tidy, repairability_table  # noqa: PLC0415
     from frontier.analysis.repairability import (  # noqa: PLC0415
         pairs_to_frame,
         repairability_pairs,
         to_frame,
     )
 
+    reference_map = _reference_map(references)
     store = ResultStore(results)
     tidy = load_tidy(store, task_name=task)
     found, skipped = repairability_table(tidy, root=results, n_bins=bins)
@@ -269,13 +274,27 @@ def recalibrate(
     if found:
         _write_parquet(to_frame(found), destination)
     paired, pair_skipped = repairability_pairs(
-        tidy, root=results, references=load_references(), n_bins=bins, n_resamples=resamples
+        tidy, root=results, references=reference_map, n_bins=bins, n_resamples=resamples
     )
     pairs_destination = destination.with_name(f"{destination.stem}_pairs.parquet")
     if paired:
         _write_parquet(pairs_to_frame(paired), pairs_destination)
     _summarise_recalibration(found, skipped, destination if found else None)
     _summarise_repairability_pairs(paired, pair_skipped, pairs_destination if paired else None)
+
+
+def _reference_map(references: Path | None) -> dict[str, str]:
+    """The backend-to-reference map, from ``--references`` or the repo-relative default."""
+    from frontier.analysis import DEFAULT_REFERENCES_PATH, load_references  # noqa: PLC0415
+
+    path = DEFAULT_REFERENCES_PATH if references is None else references
+    if not path.is_file():
+        raise typer.BadParameter(
+            f"no reference map at {path}; the default is relative to the repo root, so pass "
+            f"--references when running from elsewhere",
+            param_hint="--references",
+        )
+    return load_references(path)
 
 
 def _parse_mode(value: str) -> RunMode:

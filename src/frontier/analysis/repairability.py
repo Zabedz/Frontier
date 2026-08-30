@@ -22,7 +22,7 @@ import pandas as pd
 
 from frontier.analysis._skipped import Skipped
 from frontier.analysis.holdout import NotRecalibratableError
-from frontier.analysis.load import load_split_predictions
+from frontier.analysis.load import MixedConfigHashError, load_split_predictions
 from frontier.analysis.significance import VariantPair, resolve_pairs
 from frontier.io.predictions import MissingSidecarError, PredictionRows, QidArray
 from frontier.metrics.bootstrap import (
@@ -30,6 +30,7 @@ from frontier.metrics.bootstrap import (
     ResidualInterval,
     ScoredItems,
     paired_residual_ece_ci,
+    residual_ece,
 )
 from frontier.metrics.calibration import DEFAULT_BINS, ece_from_confidence, top_label
 from frontier.metrics.recalibration import (
@@ -159,7 +160,12 @@ def repairability_table(
                     n_bins=n_bins,
                 )
             )
-        except (MissingSidecarError, NotRecalibratableError, TemperatureFitError) as reason:
+        except (
+            MissingSidecarError,
+            MixedConfigHashError,
+            NotRecalibratableError,
+            TemperatureFitError,
+        ) as reason:
             skipped.append(Skipped(variant, task, str(reason)))
     return found, skipped
 
@@ -226,8 +232,17 @@ class RepairabilityPair:
 
     @property
     def variant_is_less_repairable(self) -> bool:
-        """Whether the variant's surviving error exceeds the reference's, beyond noise."""
-        return self.residual_gap.excludes_zero and self.residual_gap.point > 0.0
+        """Whether the variant's surviving error exceeds the reference's, beyond noise.
+
+        False whenever a resample refused a fit. Those bounds are quantiles over the
+        surviving draws, so they come back finite however many were dropped, and
+        ``excludes_zero`` alone would read a thinned distribution as a verdict.
+        """
+        return (
+            self.residual_gap.usable
+            and self.residual_gap.excludes_zero
+            and self.residual_gap.point > 0.0
+        )
 
 
 def _scored(rows: PredictionRows, label: str) -> ScoredItems:
@@ -236,14 +251,15 @@ def _scored(rows: PredictionRows, label: str) -> ScoredItems:
     return ScoredItems(probs=rows.options.probs, gold=rows.gold, n_options=rows.options.n_options)
 
 
-def check_report_alignment(
-    pair: VariantPair, reference: PredictionRows, variant: PredictionRows
+def check_alignment(
+    pair: VariantPair, reference: PredictionRows, variant: PredictionRows, *, half: str
 ) -> None:
-    """Refuse a pair whose report halves hold different items.
+    """Refuse a pair whose ``half`` holds different items on the two sides.
 
     The split is keyed on the item, so matched halves follow from matched item sets. Two
     variants scored at different subset sizes hold different sets, and their residuals are
-    then measured on different questions.
+    then measured on different questions. Both halves are checked: the interval shares one
+    index vector across the two sides of the fit half as well as the report half.
 
     Raises ``NotRecalibratableError``; ids are compared when both sides carry them, and
     lengths otherwise.
@@ -251,13 +267,13 @@ def check_report_alignment(
     if reference.qid is not None and variant.qid is not None:
         if not np.array_equal(reference.qid, variant.qid):
             raise NotRecalibratableError(
-                f"{pair.variant} and {pair.reference} report halves hold different items "
+                f"{pair.variant} and {pair.reference} {half} halves hold different items "
                 f"({fingerprint(variant.qid)} against {fingerprint(reference.qid)})"
             )
         return
     if reference.gold.shape[0] != variant.gold.shape[0]:
         raise NotRecalibratableError(
-            f"{pair.variant} and {pair.reference} report halves differ in length "
+            f"{pair.variant} and {pair.reference} {half} halves differ in length "
             f"({variant.gold.shape[0]} against {reference.gold.shape[0]})"
         )
 
@@ -282,17 +298,31 @@ def repairability_pairs(
             variant_fit, variant_report = load_split_predictions(
                 tidy, variant_name=pair.variant, task_name=pair.task, root=root
             )
-            check_report_alignment(pair, reference_report, variant_report)
+            check_alignment(pair, reference_report, variant_report, half="report")
+            check_alignment(pair, reference_fit, variant_fit, half="fit")
+            reference_fit_items = _scored(reference_fit, pair.reference)
+            reference_report_items = _scored(reference_report, pair.reference)
+            variant_fit_items = _scored(variant_fit, pair.variant)
+            variant_report_items = _scored(variant_report, pair.variant)
             gap = paired_residual_ece_ci(
-                _scored(reference_fit, pair.reference),
-                _scored(reference_report, pair.reference),
-                _scored(variant_fit, pair.variant),
-                _scored(variant_report, pair.variant),
+                reference_fit_items,
+                reference_report_items,
+                variant_fit_items,
+                variant_report_items,
                 n_bins=n_bins,
                 n_resamples=n_resamples,
                 rng=rng,
             )
-        except (MissingSidecarError, NotRecalibratableError, TemperatureFitError) as reason:
+            residual_variant = residual_ece(variant_fit_items, variant_report_items, n_bins=n_bins)
+            residual_reference = residual_ece(
+                reference_fit_items, reference_report_items, n_bins=n_bins
+            )
+        except (
+            MissingSidecarError,
+            MixedConfigHashError,
+            NotRecalibratableError,
+            TemperatureFitError,
+        ) as reason:
             skipped.append(Skipped(pair.variant, pair.task, str(reason)))
             continue
         found.append(
@@ -300,20 +330,12 @@ def repairability_pairs(
                 pair=pair,
                 n_bins=n_bins,
                 n_report=int(variant_report.gold.shape[0]),
-                residual_variant=_residual_of(variant_fit, variant_report, n_bins),
-                residual_reference=_residual_of(reference_fit, reference_report, n_bins),
+                residual_variant=residual_variant,
+                residual_reference=residual_reference,
                 residual_gap=gap,
             )
         )
     return found, skipped
-
-
-def _residual_of(fit: PredictionRows, report: PredictionRows, n_bins: int) -> float:
-    assert fit.options is not None and report.options is not None  # checked by _scored
-    temperature = fit_temperature(fit.options.probs, fit.gold, fit.options.n_options)
-    scaled = apply_temperature(report.options.probs, temperature, report.options.n_options)
-    confidence, correct = top_label(scaled, report.gold)
-    return ece_from_confidence(confidence, correct, n_bins=n_bins)
 
 
 def pairs_to_frame(found: Sequence[RepairabilityPair]) -> pd.DataFrame:
@@ -334,6 +356,7 @@ def pairs_to_frame(found: Sequence[RepairabilityPair]) -> pd.DataFrame:
                 "residual_gap_low": item.residual_gap.low,
                 "residual_gap_high": item.residual_gap.high,
                 "residual_gap_excludes_zero": item.residual_gap.excludes_zero,
+                "residual_gap_usable": item.residual_gap.usable,
                 "refused_resamples": item.residual_gap.refused_resamples,
                 "variant_is_less_repairable": item.variant_is_less_repairable,
             }

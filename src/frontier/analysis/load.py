@@ -28,6 +28,11 @@ from frontier.io.predictions import (
 )
 from frontier.io.store import ResultStore, read_frame
 
+
+class MixedConfigHashError(ValueError):
+    """One variant's rows scored under more than one config hash, so they cannot pool."""
+
+
 XCost = Literal["latency", "memory", "cost_inv"]
 
 COST_INV_TOKENS = 1000.0
@@ -184,8 +189,8 @@ def load_predictions_for_variant(
     scored differently would raise the item count while the paired guards downstream
     stayed satisfied, a doubled group matching item for item against another doubled one.
 
-    Raises ``ValueError`` for a missing variant/task, a group spanning several config
-    hashes, or a missing sidecar.
+    Raises ``ValueError`` for a missing variant/task, ``MixedConfigHashError`` for a group
+    spanning several config hashes, and ``MissingSidecarError`` for a missing sidecar.
     """
     return _concat_predictions(_sidecars_for_variant(tidy, variant_name, task_name, root))
 
@@ -216,7 +221,7 @@ def _sidecars_for_variant(
         )
     hashes = sorted({str(value) for value in subset["config_hash"]})
     if len(hashes) > 1:
-        raise ValueError(
+        raise MixedConfigHashError(
             f"variant {variant_name!r} on task {task_name!r} spans {len(hashes)} config "
             f"hashes ({', '.join(hashes)}); pooling them would mix runs scored differently"
         )

@@ -16,18 +16,26 @@ from conftest import make_calibrated_confidence, make_calibrated_softmax, make_g
 from scipy.stats import DegenerateDataWarning, bootstrap  # type: ignore[import-untyped]
 
 from frontier.metrics.bootstrap import (
+    ScoredItems,
     accuracy_ci,
     ece_ci,
     paired_damage_gap_ci,
     paired_damage_ratio_ci,
     paired_delta_accuracy_ci,
     paired_delta_ece_ci,
+    paired_residual_ece_ci,
     relative_damages,
+    residual_ece,
 )
 from frontier.metrics.calibration import ece_from_confidence, top_label
 
 RESAMPLES = 999
 RATE = 0.7
+N_FIT = 30
+N_REPORT = 60
+N_OPTIONS = 4
+SHARPEN = 0.5
+POISON_LOGIT = 60.0  # a confidently wrong item, so a draw holding it runs past the bound
 
 
 def test_accuracy_ci_point_is_the_sample_accuracy_and_is_bracketed() -> None:
@@ -306,3 +314,82 @@ def test_damage_ratio_denominator_clause_alone_makes_it_unusable() -> None:
     assert ratio.nonfinite_resamples == 0
     assert not ratio.denominator.excludes_zero
     assert not ratio.usable
+
+
+def _softmax(scores: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    exponentiated = np.exp(scores - scores.max(axis=1, keepdims=True))
+    normalised: npt.NDArray[np.float64] = exponentiated / exponentiated.sum(axis=1, keepdims=True)
+    return normalised
+
+
+def _halves(*, sharpen: float, poison: bool) -> tuple[ScoredItems, ScoredItems]:
+    """One variant's fit and report halves, optionally carrying one unfittable item."""
+    rng = np.random.default_rng(0)
+    logits = rng.normal(0.0, 2.0, size=(N_FIT + N_REPORT, N_OPTIONS))
+    gold = np.asarray([rng.choice(N_OPTIONS, p=row) for row in _softmax(logits)], dtype=np.intp)
+    scores = logits / sharpen
+    if poison:
+        scores[0] = 0.0
+        scores[0, (gold[0] + 1) % N_OPTIONS] = POISON_LOGIT
+    probs = _softmax(scores)
+    n_options = np.full(N_FIT + N_REPORT, N_OPTIONS, dtype=np.intp)
+    return (
+        ScoredItems(probs=probs[:N_FIT], gold=gold[:N_FIT], n_options=n_options[:N_FIT]),
+        ScoredItems(probs=probs[N_FIT:], gold=gold[N_FIT:], n_options=n_options[N_FIT:]),
+    )
+
+
+def test_residual_interval_is_centred_on_the_two_whole_half_residuals() -> None:
+    """The point estimate is the difference the pair table stores, computed one way."""
+    reference_fit, reference_report = _halves(sharpen=1.0, poison=False)
+    variant_fit, variant_report = _halves(sharpen=SHARPEN, poison=False)
+    interval = paired_residual_ece_ci(
+        reference_fit, reference_report, variant_fit, variant_report, n_resamples=199, rng=0
+    )
+    variant = residual_ece(variant_fit, variant_report)
+    reference = residual_ece(reference_fit, reference_report)
+    assert interval.point == variant - reference
+    assert interval.refused_resamples == 0
+    assert interval.usable
+
+
+def test_an_explicit_full_index_matches_the_default() -> None:
+    fit, report = _halves(sharpen=SHARPEN, poison=False)
+    whole = residual_ece(fit, report)
+    spelled_out = residual_ece(
+        fit, report, np.arange(fit.gold.shape[0]), np.arange(report.gold.shape[0])
+    )
+    assert whole == spelled_out
+
+
+def test_resamples_that_refuse_a_fit_are_counted_and_dropped() -> None:
+    """One confidently wrong item; a draw holding it more than once runs to the bound.
+
+    The full sample still fits, so the interval is built from the surviving draws and
+    ``usable`` is what says the distribution was thinned.
+    """
+    reference_fit, reference_report = _halves(sharpen=1.0, poison=False)
+    variant_fit, variant_report = _halves(sharpen=SHARPEN, poison=True)
+    interval = paired_residual_ece_ci(
+        reference_fit, reference_report, variant_fit, variant_report, n_resamples=199, rng=0
+    )
+    assert 0 < interval.refused_resamples < interval.n_resamples
+    assert not interval.usable
+    assert math.isfinite(interval.low) and math.isfinite(interval.high)
+    assert interval.low <= interval.point <= interval.high
+
+
+def test_report_halves_of_different_length_are_refused() -> None:
+    fit, report = _halves(sharpen=SHARPEN, poison=False)
+    short = ScoredItems(
+        probs=report.probs[:-1], gold=report.gold[:-1], n_options=report.n_options[:-1]
+    )
+    with pytest.raises(ValueError, match="report halves differ in length"):
+        paired_residual_ece_ci(fit, short, fit, report, n_resamples=19, rng=0)
+
+
+def test_fit_halves_of_different_length_are_refused() -> None:
+    fit, report = _halves(sharpen=SHARPEN, poison=False)
+    short = ScoredItems(probs=fit.probs[:-1], gold=fit.gold[:-1], n_options=fit.n_options[:-1])
+    with pytest.raises(ValueError, match="fit halves differ in length"):
+        paired_residual_ece_ci(short, report, fit, report, n_resamples=19, rng=0)

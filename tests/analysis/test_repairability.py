@@ -12,12 +12,13 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from frontier.analysis.holdout import NotRecalibratableError
+from frontier.analysis.holdout import NotRecalibratableError, is_fit
 from frontier.analysis.load import load_split_predictions, load_tidy
 from frontier.analysis.repairability import (
     REPORT_FLOOR,
     Repairability,
-    check_report_alignment,
+    RepairabilityPair,
+    check_alignment,
     fingerprint,
     pairs_to_frame,
     repairability_pairs,
@@ -36,6 +37,7 @@ from frontier.io.predictions import (
     write_predictions_rows,
 )
 from frontier.io.store import ResultStore, append_row
+from frontier.metrics.bootstrap import ResidualInterval
 from frontier.schema import ResultRow
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "io"))
@@ -281,7 +283,7 @@ def test_report_halves_over_different_items_are_refused(tmp_path: Path) -> None:
     assert any("different items" in skip.reason for skip in skipped)
 
 
-def test_check_report_alignment_falls_back_to_length_without_ids() -> None:
+def test_check_alignment_falls_back_to_length_without_ids() -> None:
     pair = VariantPair(variant="int4-nf4", reference="fp16", task="mmlu", backend="hf", track="A")
     short = PredictionRows(
         np.zeros(3),
@@ -299,9 +301,11 @@ def test_check_report_alignment_falls_back_to_length_without_ids() -> None:
         None,
         None,
     )
-    check_report_alignment(pair, short, short)
-    with pytest.raises(NotRecalibratableError, match="differ in length"):
-        check_report_alignment(pair, short, long)
+    check_alignment(pair, short, short, half="report")
+    with pytest.raises(NotRecalibratableError, match="report halves differ in length"):
+        check_alignment(pair, short, long, half="report")
+    with pytest.raises(NotRecalibratableError, match="fit halves differ in length"):
+        check_alignment(pair, short, long, half="fit")
 
 
 def test_pairs_to_frame_carries_the_interval_and_the_verdict(tmp_path: Path) -> None:
@@ -319,6 +323,7 @@ def test_pairs_to_frame_carries_the_interval_and_the_verdict(tmp_path: Path) -> 
         "residual_gap_low",
         "residual_gap_high",
         "residual_gap_excludes_zero",
+        "residual_gap_usable",
         "variant_is_less_repairable",
         "refused_resamples",
     } <= set(frame.columns)
@@ -348,3 +353,83 @@ def test_a_sidecar_with_ids_but_no_distributions_is_skipped_in_the_pair_layer(
     )
     assert found == []
     assert any("no stored distributions" in skip.reason for skip in skipped)
+
+
+def _refit_ids(qids: list[str]) -> list[str]:
+    """The same report-half ids, with every fit-half id swapped for a different one."""
+    spare = (name for name in (f"spare{index}" for index in range(10 * len(qids))) if is_fit(name))
+    return [next(spare) if is_fit(qid) else qid for qid in qids]
+
+
+def test_fit_halves_over_different_items_are_refused(tmp_path: Path) -> None:
+    """The report halves match and the fit halves are the same length here.
+
+    Nothing downstream would notice, and the two temperatures come off different questions.
+    """
+    base = [f"q{index}" for index in range(N_ITEMS)]
+    store, root = _store(
+        tmp_path,
+        {"fp16": 1.0, "int4-nf4": SHARPEN},
+        item_ids={"fp16": base, "int4-nf4": _refit_ids(base)},
+    )
+    found, skipped = repairability_pairs(
+        load_tidy(store), root=root, references={"hf": "fp16"}, n_resamples=19
+    )
+    assert found == []
+    assert any("fit halves hold different items" in skip.reason for skip in skipped)
+
+
+def test_the_pair_residuals_and_their_gap_are_one_number(tmp_path: Path) -> None:
+    """The parquet cannot hold a difference that disagrees with the two it sits beside."""
+    store, root = _store(tmp_path, {"fp16": 1.0, "int4-nf4": SHARPEN})
+    found, _ = repairability_pairs(
+        load_tidy(store), root=root, references={"hf": "fp16"}, n_resamples=19
+    )
+    pair = found[0]
+    assert pair.residual_variant - pair.residual_reference == pair.residual_gap.point
+    frame = pairs_to_frame(found)
+    assert (
+        frame["residual_variant"].iloc[0] - frame["residual_reference"].iloc[0]
+        == frame["residual_gap"].iloc[0]
+    )
+
+
+def test_a_gap_whose_resamples_partly_refused_is_not_a_verdict() -> None:
+    """Those bounds are quantiles over the survivors, so they are finite however few."""
+    thinned = RepairabilityPair(
+        pair=VariantPair(
+            variant="int4-nf4", reference="fp16", task="mmlu", backend="hf", track="A"
+        ),
+        n_bins=10,
+        n_report=1400,
+        residual_variant=0.08,
+        residual_reference=0.03,
+        residual_gap=ResidualInterval(
+            point=0.05, low=0.01, high=0.09, refused_resamples=4000, n_resamples=9999
+        ),
+    )
+    assert thinned.residual_gap.excludes_zero
+    assert not thinned.variant_is_less_repairable
+    assert not pairs_to_frame([thinned])["residual_gap_usable"].iloc[0]
+
+
+def test_a_variant_spanning_two_config_hashes_is_skipped_not_raised(tmp_path: Path) -> None:
+    """A config edit re-run leaves two hashes under one variant. Both layers skip it."""
+    store, root = _store(tmp_path, {"fp16": 1.0, "int4-nf4": SHARPEN})
+    base = sample_row()
+    append_row(
+        replace(
+            base,
+            variant_name="int4-nf4",
+            provenance=replace(base.provenance, config_hash="f" * 64),
+        ),
+        store,
+    )
+    found, skipped = repairability_table(load_tidy(store), root=root)
+    assert [item.variant for item in found] == ["fp16"]
+    assert any("config hashes" in skip.reason for skip in skipped)
+    paired, pair_skipped = repairability_pairs(
+        load_tidy(store), root=root, references={"hf": "fp16"}, n_resamples=19
+    )
+    assert paired == []
+    assert any("config hashes" in skip.reason for skip in pair_skipped)

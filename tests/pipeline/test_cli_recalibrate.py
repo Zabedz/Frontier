@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 from typer.testing import CliRunner
 
 from frontier.io.predictions import (
@@ -25,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "io"))
 from rows import sample_row
 
 N_ITEMS = 2000
+USAGE_ERROR = 2  # click's exit code for a bad parameter
 
 
 def _seeded_store(root: Path) -> None:
@@ -84,3 +86,27 @@ def test_recalibrate_writes_nothing_when_no_variant_carries_distributions(
     result = CliRunner().invoke(app, ["recalibrate", "--results", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert not (tmp_path / "recalibration.parquet").exists()
+
+
+def test_a_reference_map_can_be_pointed_at(tmp_path: Path) -> None:
+    _seeded_store(tmp_path)
+    references = tmp_path / "references.yaml"
+    references.write_text("references:\n  hf: fp16\n", encoding="utf-8")
+    result = CliRunner().invoke(
+        app,
+        ["recalibrate", "--results", str(tmp_path), "--references", str(references)],
+    )
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "recalibration.parquet").exists()
+
+
+def test_a_missing_reference_map_is_a_usage_error_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default path is repo-relative, so the command has to say so from elsewhere."""
+    _seeded_store(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(app, ["recalibrate", "--results", str(tmp_path)])
+    assert result.exit_code == USAGE_ERROR, result.output
+    assert "--references" in result.output
+    assert not isinstance(result.exception, FileNotFoundError)

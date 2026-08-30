@@ -1,9 +1,11 @@
-"""Paired bootstrap confidence intervals via ``scipy.stats.bootstrap``.
+"""Paired bootstrap confidence intervals over the per-item arrays.
 
-Every statistic runs on 1-D per-item arrays, so ``paired=True`` applies one index vector to
-confidence, correctness, and both variants of a delta together (methodology section 6). The
-intervals are percentile: BCa's acceleration term is undefined on the constant resample
-distribution a degenerate fixture (all-correct, identical variants) produces.
+The delta statistics run on 1-D per-item arrays through ``scipy.stats.bootstrap``, so
+``paired=True`` applies one index vector to confidence, correctness, and both variants of a
+delta together (methodology section 6). The residual statistic draws from two halves of
+differing length and is hand-rolled at the foot of the file. The intervals are percentile:
+BCa's acceleration term is undefined on the constant resample distribution a degenerate
+fixture (all-correct, identical variants) produces.
 """
 
 from __future__ import annotations
@@ -405,20 +407,27 @@ class ResidualInterval:
         return self.refused_resamples == 0
 
 
-def _residual_ece(
+def residual_ece(
     fit: ScoredItems,
     report: ScoredItems,
-    fit_rows: IntArray,
-    report_rows: IntArray,
+    fit_rows: IntArray | None = None,
+    report_rows: IntArray | None = None,
     *,
-    n_bins: int,
+    n_bins: int = DEFAULT_BINS,
 ) -> float:
-    """ECE on the report rows after a temperature fitted on the fit rows."""
-    temperature = fit_temperature(fit.probs[fit_rows], fit.gold[fit_rows], fit.n_options[fit_rows])
+    """ECE on the report rows after a temperature fitted on the fit rows.
+
+    ``None`` for either index takes that half whole, which is the point estimate the
+    interval below is centred on. One producer, so a table cannot carry a residual and a
+    difference of residuals that disagree.
+    """
+    take_fit = np.arange(fit.gold.shape[0]) if fit_rows is None else fit_rows
+    take_report = np.arange(report.gold.shape[0]) if report_rows is None else report_rows
+    temperature = fit_temperature(fit.probs[take_fit], fit.gold[take_fit], fit.n_options[take_fit])
     scaled = apply_temperature(
-        report.probs[report_rows], temperature, report.n_options[report_rows]
+        report.probs[take_report], temperature, report.n_options[take_report]
     )
-    confidence, correct = top_label(scaled, report.gold[report_rows])
+    confidence, correct = top_label(scaled, report.gold[take_report])
     return ece_from_confidence(confidence, correct, n_bins=n_bins)
 
 
@@ -441,8 +450,8 @@ def paired_residual_ece_ci(
     sample value would report the residual as if the fit were free of error, and the fit
     noise is what puts a perfectly calibrated model's removed fraction near -13%.
 
-    ``scipy.stats.bootstrap`` takes one index vector across every array it is given, so it
-    cannot express a statistic drawing from two samples of different length.
+    The resampling is hand-rolled. ``scipy.stats.bootstrap`` has nowhere to count the
+    resamples whose fit refused.
 
     A resample whose fit refuses (see ``TemperatureFitError``) is counted and dropped; the
     interval comes from the resamples that produced a temperature, and ``usable`` is False
@@ -461,10 +470,8 @@ def paired_residual_ece_ci(
     generator = _normalise_rng(rng) or np.random.default_rng()
     n_fit = reference_fit.gold.shape[0]
     n_report = reference_report.gold.shape[0]
-    point = _residual_ece(
-        variant_fit, variant_report, np.arange(n_fit), np.arange(n_report), n_bins=n_bins
-    ) - _residual_ece(
-        reference_fit, reference_report, np.arange(n_fit), np.arange(n_report), n_bins=n_bins
+    point = residual_ece(variant_fit, variant_report, n_bins=n_bins) - residual_ece(
+        reference_fit, reference_report, n_bins=n_bins
     )
     drawn: list[float] = []
     refused = 0
@@ -473,8 +480,8 @@ def paired_residual_ece_ci(
         report_rows = generator.integers(0, n_report, size=n_report)
         try:
             drawn.append(
-                _residual_ece(variant_fit, variant_report, fit_rows, report_rows, n_bins=n_bins)
-                - _residual_ece(
+                residual_ece(variant_fit, variant_report, fit_rows, report_rows, n_bins=n_bins)
+                - residual_ece(
                     reference_fit, reference_report, fit_rows, report_rows, n_bins=n_bins
                 )
             )
