@@ -9,7 +9,7 @@ _HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$_HERE/lib.sh"
 
 echo "[bootstrap] ensuring tools on pod ($POD_HOST)"
-pod_ssh 'command -v uv >/dev/null 2>&1 || (curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1); \
+pod_ssh 'export PATH=$HOME/.local/bin:$PATH; command -v uv >/dev/null 2>&1 || (curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1); \
          export DEBIAN_FRONTEND=noninteractive; \
          (command -v tmux >/dev/null 2>&1 && command -v rsync >/dev/null 2>&1) || \
            (apt-get update -qq && apt-get install -y -qq tmux rsync >/dev/null 2>&1); \
