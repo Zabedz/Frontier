@@ -23,10 +23,12 @@ CANDIDATE_LOGPROBS = {10: -1.0, 11: -2.0, 12: -0.5, 13: -3.0}
 
 
 class _FakeSamplingParams:
-    def __init__(self, *, temperature: float, max_tokens: int, logprobs: int, seed: int) -> None:
+    def __init__(
+        self, *, temperature: float, max_tokens: int, logprob_token_ids: list[int], seed: int
+    ) -> None:
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self.logprobs = logprobs
+        self.logprob_token_ids = logprob_token_ids
         self.seed = seed
 
 
@@ -133,12 +135,12 @@ def test_confidence_is_invariant_to_a_shared_additive_constant() -> None:
     assert np.allclose(base, shifted_probs)
 
 
-def test_sampling_params_are_temperature_one_full_vocab_single_token() -> None:
+def test_sampling_params_are_temperature_one_letter_ids_single_token() -> None:
     provider, engine = _provider([_row_dict()])
     provider.next_token_logits([build_prompt("Q?", ("a", "b", "c", "d"))])
     params = engine.captured_sampling_params
     assert params.temperature == 1.0
-    assert params.logprobs == -1
+    assert params.logprob_token_ids == [int(i) for i in provider.candidate_token_ids("ABCD")]
     assert params.max_tokens == 1
     assert getattr(params, "allowed_token_ids", None) is None
 

@@ -1,5 +1,6 @@
-"""The vLLM Track-B logit provider: full-vocab logprobs at ``T=1``. A logprob differs from
-the logit by one per-position constant, so the candidate softmax matches the HF backend.
+"""The vLLM Track-B logit provider: answer-letter logprobs at ``T=1``, read off the
+full-vocab log-softmax. A logprob differs from the logit by one per-position constant, so
+the candidate softmax matches the HF backend.
 """
 
 from __future__ import annotations
@@ -61,12 +62,16 @@ class VllmLogitProvider:
             return
         if self._engine is None:
             self._build_engine()  # pragma: no cover
-        # Full vocab: these logprobs are pre-processor, so a mask cannot reshape the top-k.
-        self._sampling_params = self._sampling_cls(
-            temperature=1.0, max_tokens=1, logprobs=-1, seed=self._seed
-        )
         self._vocab = len(self._hf_tokenizer)
         self._letter_ids = resolve_candidates(self._hf_tokenizer, letters_for(self._max_letters))
+        # logprob_token_ids gathers these ids from the full-vocab log-softmax on the GPU, so
+        # no mask renormalises them; logprobs=-1 built a vocab-sized dict per prompt on CPU.
+        self._sampling_params = self._sampling_cls(
+            temperature=1.0,
+            max_tokens=1,
+            logprob_token_ids=[int(token_id) for token_id in self._letter_ids],
+            seed=self._seed,
+        )
         self._loaded = True
 
     def _build_engine(self) -> None:  # pragma: no cover
@@ -82,7 +87,6 @@ class VllmLogitProvider:
             model=self.model,
             dtype="auto",
             seed=self._seed,
-            max_logprobs=-1,
             gpu_memory_utilization=vllm_gpu_memory_utilization(),
             enforce_eager=False,
         )
