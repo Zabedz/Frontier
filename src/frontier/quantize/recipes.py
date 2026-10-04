@@ -49,24 +49,23 @@ def recipe_for(quant: QuantSpec) -> RecipeSpec:
 def to_modifiers(spec: RecipeSpec) -> list[Any]:
     """Build the llm-compressor modifier list for a descriptor (imports llmcompressor).
 
-    GPTQ's ``actorder`` is left at the current release's ``"weight"`` default, which is
-    the accuracy-recovery setting.
+    The 4-bit group size comes from the preset scheme, so a config that disagrees is
+    refused. GPTQ's ``actorder`` is set to ``"weight"``, the accuracy-recovery setting;
+    llm-compressor 0.12 defaults to ``"static"``.
     """
-    from llmcompressor.modifiers.awq import AWQModifier  # noqa: PLC0415
     from llmcompressor.modifiers.quantization import (  # noqa: PLC0415
         GPTQModifier,
         QuantizationModifier,
     )
     from llmcompressor.modifiers.smoothquant import SmoothQuantModifier  # noqa: PLC0415
+    from llmcompressor.modifiers.transform import AWQModifier  # noqa: PLC0415
 
     ignore = list(spec.ignore)
     if spec.kind == "gptq":
-        return [
-            GPTQModifier(
-                targets="Linear", scheme="W4A16", group_size=spec.group_size, ignore=ignore
-            )
-        ]
+        _require_preset_group("W4A16", spec.group_size)
+        return [GPTQModifier(targets="Linear", scheme="W4A16", actorder="weight", ignore=ignore)]
     if spec.kind == "awq":
+        _require_preset_group("W4A16_ASYM", spec.group_size)
         return [
             AWQModifier(),
             QuantizationModifier(targets=["Linear"], scheme="W4A16_ASYM", ignore=ignore),
@@ -75,3 +74,14 @@ def to_modifiers(spec: RecipeSpec) -> list[Any]:
         SmoothQuantModifier(smoothing_strength=SMOOTHQUANT_STRENGTH),
         GPTQModifier(targets="Linear", scheme="W8A8", ignore=ignore),
     ]
+
+
+def _require_preset_group(scheme: str, group_size: int) -> None:
+    from compressed_tensors.quantization import preset_name_to_scheme  # noqa: PLC0415
+
+    preset = preset_name_to_scheme(scheme, ["Linear"]).weights.group_size
+    if preset != group_size:
+        raise ValueError(
+            f"quant.group_size {group_size} disagrees with the {scheme} preset's {preset}; "
+            "the modifier takes its group size from the preset"
+        )

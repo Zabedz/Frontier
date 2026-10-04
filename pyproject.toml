@@ -138,6 +138,7 @@ module = [
     "netcal.*",
     "vllm.*",
     "llmcompressor.*",
+    "compressed_tensors.*",
     "bitsandbytes.*",
     "torchao.*",
     "gptqmodel.*",

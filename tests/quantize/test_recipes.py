@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from frontier.quantize.recipes import RecipeSpec, recipe_for, to_modifiers
+from frontier.quantize.recipes import RecipeKind, RecipeSpec, recipe_for, to_modifiers
 from frontier.schema import QuantSpec
 
 GROUP_SIZE = 128
@@ -43,13 +43,22 @@ def test_to_modifiers_gptq_is_single_w4a16() -> None:
     modifiers = to_modifiers(RecipeSpec(kind="gptq", group_size=GROUP_SIZE))
     assert len(modifiers) == 1
     assert modifiers[0].scheme == "W4A16"
-    assert modifiers[0].group_size == GROUP_SIZE
+    assert modifiers[0].actorder == "weight"
+
+
+@pytest.mark.parametrize("kind", ["gptq", "awq"])
+def test_to_modifiers_refuses_a_group_size_the_preset_lacks(kind: RecipeKind) -> None:
+    pytest.importorskip("llmcompressor")
+    with pytest.raises(ValueError, match="disagrees with the"):
+        to_modifiers(RecipeSpec(kind=kind, group_size=SMALL_GROUP))
 
 
 def test_to_modifiers_awq_pairs_scale_learning_with_asym_quant() -> None:
     pytest.importorskip("llmcompressor")
     modifiers = to_modifiers(RecipeSpec(kind="awq", group_size=GROUP_SIZE))
     assert len(modifiers) == PAIR
+    # The 0.12 awq.AWQModifier shim returns a list holding an empty quantizer.
+    assert type(modifiers[0]).__module__.startswith("llmcompressor.modifiers.transform")
     assert modifiers[1].scheme == "W4A16_ASYM"
 
 
