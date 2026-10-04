@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from frontier.analysis.frontier_chart import ColorBy
     from frontier.analysis.load import XCost
     from frontier.analysis.repairability import Repairability, RepairabilityPair
+    from frontier.analysis.residual_coverage import CoverageRow
     from frontier.analysis.significance import PairSignificance
 
 # The analysis stack pulls matplotlib and pandas, so `plot` imports it in the body to keep
@@ -281,6 +282,75 @@ def recalibrate(
         _write_parquet(pairs_to_frame(paired), pairs_destination)
     _summarise_recalibration(found, skipped, destination if found else None)
     _summarise_repairability_pairs(paired, pair_skipped, pairs_destination if paired else None)
+
+
+@app.command("residual-coverage")
+def residual_coverage(
+    replicates: Annotated[
+        int, typer.Option("--replicates", min=1, help="Simulated pairs per scenario.")
+    ] = 50,
+    resamples: Annotated[
+        int, typer.Option("--resamples", min=1, help="Bootstrap resamples per interval.")
+    ] = 1999,
+    items: Annotated[
+        int, typer.Option("--items", min=10, help="Items per simulated variant, before the split.")
+    ] = 2000,
+    truth_items: Annotated[
+        int | None,
+        typer.Option("--truth-items", min=10, help="Items in the run that fixes the true gap."),
+    ] = None,
+    seed: Annotated[int, typer.Option("--seed", help="Root seed for every stream.")] = 0,
+    out: Annotated[Path, typer.Option("--out", help="Parquet output.")] = Path(
+        "results/residual_coverage.parquet"
+    ),
+) -> None:
+    """Check the residual interval's coverage and power on pairs with a known gap.
+
+    Single process. The table is rewritten after each scenario, so a killed run keeps the
+    scenarios it finished.
+    """
+    from frontier.analysis.residual_coverage import TRUTH_ITEMS, study, to_frame  # noqa: PLC0415
+
+    rows: list[CoverageRow] = []
+    for row in study(
+        replicates=replicates,
+        n_items=items,
+        n_resamples=resamples,
+        seed=seed,
+        truth_items=TRUTH_ITEMS if truth_items is None else truth_items,
+    ):
+        rows.append(row)
+        _write_parquet(to_frame(rows), out)
+        _console.print(f"{row.scenario}: coverage {row.coverage:.2f}, true gap {row.true_gap:+.4f}")
+    _summarise_coverage(rows, out)
+
+
+def _summarise_coverage(rows: list[CoverageRow], destination: Path) -> None:
+    table = Table(title="Residual interval against a known gap (simulated)")
+    for column in (
+        "scenario",
+        "true gap",
+        "coverage",
+        ">0",
+        "<0",
+        "mean point",
+        "width",
+        "unusable",
+    ):
+        table.add_column(column, overflow="fold")
+    for row in rows:
+        table.add_row(
+            row.scenario,
+            f"{row.true_gap:+.4f}",
+            f"{row.coverage:.2f}",
+            f"{row.above_zero:.2f}",
+            f"{row.below_zero:.2f}",
+            f"{row.mean_point:+.4f}",
+            f"{row.mean_width:.4f}",
+            f"{row.unusable}/{row.replicates}",
+        )
+    _console.print(table)
+    _console.print(f"wrote {destination}")
 
 
 def _reference_map(references: Path | None) -> dict[str, str]:
