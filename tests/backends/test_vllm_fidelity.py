@@ -5,6 +5,7 @@ Track B must reproduce the Track-A baseline before its ECE is admitted next to a
 
 from __future__ import annotations
 
+import gc
 import os
 
 import numpy as np
@@ -51,11 +52,16 @@ def _records() -> list[EvalRecord]:
 
 
 def test_fp16_vllm_reproduces_hf_candidate_softmax_and_ece() -> None:
+    import torch  # noqa: PLC0415
+
     records = _records()
     hf = HFLogitProvider(model_id=QWEN, device="cuda", weight_dtype="fp16")
-    vllm = VllmLogitProvider(model=QWEN, tokenizer_id=QWEN, device="cuda", weight_dtype="fp16")
-
     hf_out = score_items(records, hf, scheme="cyclic")
+    # vLLM reserves the card down to GPU_HEADROOM_MB, so the HF weights must be gone first.
+    del hf
+    gc.collect()
+    torch.cuda.empty_cache()
+    vllm = VllmLogitProvider(model=QWEN, tokenizer_id=QWEN, device="cuda", weight_dtype="fp16")
     vllm_out = score_items(records, vllm, scheme="cyclic")
 
     assert np.max(np.abs(hf_out.confidence - vllm_out.confidence)) < PROB_TOL
