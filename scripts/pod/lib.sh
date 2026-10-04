@@ -28,7 +28,9 @@ _PUSH_FLAGS=(-rltz --no-owner --no-group --no-perms)
 _PULL_FLAGS=(-az)   # local receiver, ownership is fine
 
 pod_push_code() {
-  rsync "${_PUSH_FLAGS[@]}" --delete "${_PUSH_EXCLUDES[@]}" -e "$_SSH_E" \
+  # Local-only files (the clone's info/exclude) stay off the pod.
+  rsync "${_PUSH_FLAGS[@]}" --delete "${_PUSH_EXCLUDES[@]}" \
+    --exclude-from="$LOCAL_REPO/.git/info/exclude" -e "$_SSH_E" \
     "$LOCAL_REPO/" "$POD_USER@$POD_HOST:$POD_DIR/"
 }
 pod_push_results() {
