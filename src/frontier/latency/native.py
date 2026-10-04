@@ -9,10 +9,13 @@ its own column.
 from __future__ import annotations
 
 import json
+import os
+import signal
 import socket
 import subprocess
 import tempfile
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -36,6 +39,9 @@ if TYPE_CHECKING:
 ABSENT_MACHINE_STATE = MachineState(0, 0, 0, 0.0, clocks_locked=False, clock_drift_flag=False)
 
 SERVER_STOP_TIMEOUT_S = 30.0
+GROUP_POLL_S = 0.2
+# vllm 0.25 skips the bench's ready check by default, so it would fire at a loading server.
+BENCH_READY_TIMEOUT_S = 600
 VRAM_SAMPLE_INTERVAL_S = 0.5
 LOG_TAIL_LINES = 40
 # llama-bench generates single-stream, so a GGUF row carries one entry, labelled batch 1.
@@ -187,6 +193,7 @@ class VllmServer:
     def __init__(self, process: Any, log_path: Path) -> None:
         self.process = process
         self.log_path = log_path
+        self._group = _own_group(process)
 
     def assert_alive(self) -> None:
         """Raise ``RuntimeError`` with the log tail if the server process has exited."""
@@ -203,15 +210,20 @@ class VllmServer:
         return "\n".join(self.log_path.read_text(encoding="utf-8").splitlines()[-lines:])
 
     def stop(self) -> None:
-        """Terminate the server, escalating to SIGKILL after ``SERVER_STOP_TIMEOUT_S``."""
-        if self.process.poll() is not None:
-            return
-        self.process.terminate()
-        try:
-            self.process.wait(timeout=SERVER_STOP_TIMEOUT_S)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-            self.process.wait()
+        """Terminate the server, escalating to SIGKILL after ``SERVER_STOP_TIMEOUT_S``.
+
+        The engine core is a child process that holds the GPU, so the server's process
+        group is killed and reaped too: the eval engine starts as soon as this returns.
+        """
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=SERVER_STOP_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait()
+        if self._group is not None:
+            _kill_group(self._group)
 
 
 class NativeVllmLatency:
@@ -284,6 +296,13 @@ class NativeVllmLatency:
                             f"(exit {error.returncode}); server log tail:\n{server.log_tail()}"
                         ) from error
                     server.assert_alive()
+                    expected = batch_size * spec.n_trials
+                    if int(payload.get("completed", 0)) < expected:
+                        raise RuntimeError(
+                            f"vllm bench completed {payload.get('completed', 0)} of {expected} "
+                            f"requests at batch {batch_size}; server log tail:\n"
+                            f"{server.log_tail()}"
+                        )
                     vram_by_batch[batch_size] = self._read_vram_mb()
                     state = to_machine_state(before, machine.capture(), clocks_locked=locked)
                     row = parse_vllm_bench(payload, batch_size=batch_size, machine_state=state)
@@ -468,6 +487,8 @@ def _vllm_bench_command(
         "--max-concurrency",
         str(batch_size),
         "--ignore-eos",
+        "--ready-check-timeout-sec",
+        str(BENCH_READY_TIMEOUT_S),
         "--percentile-metrics",
         "ttft,tpot",
         "--metric-percentiles",
@@ -515,8 +536,42 @@ def _start_vllm_server(  # pragma: no cover
             _vllm_serve_command(model, port=port, gpu_fraction=gpu_fraction),
             stdout=handle,
             stderr=subprocess.STDOUT,
+            start_new_session=True,
         )
     return VllmServer(process, log_path)
+
+
+def _own_group(process: Any) -> int | None:
+    """The process's group id when it leads its own group, else ``None``.
+
+    Only a group the server leads is safe to kill: any other is the caller's own.
+    """
+    pid = getattr(process, "pid", None)
+    if not isinstance(pid, int):
+        return None
+    try:
+        return pid if os.getpgid(pid) == pid else None
+    except ProcessLookupError:
+        return None
+
+
+def _kill_group(group: int) -> None:
+    """SIGKILL every process in ``group`` and wait until none is left.
+
+    macOS answers EPERM for a group holding only zombies, where Linux answers ESRCH.
+    """
+    try:
+        os.killpg(group, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        return
+    deadline = time.monotonic() + SERVER_STOP_TIMEOUT_S
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(group, 0)
+        except (ProcessLookupError, PermissionError):
+            return
+        time.sleep(GROUP_POLL_S)
+    raise RuntimeError(f"vllm serve process group {group} survived SIGKILL")
 
 
 def _free_port() -> int:  # pragma: no cover

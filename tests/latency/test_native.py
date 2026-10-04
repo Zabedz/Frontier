@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -13,6 +14,7 @@ from frontier.eval.provider import LogitProvider
 from frontier.latency.machine import ClockReading
 from frontier.latency.native import (
     ABSENT_MACHINE_STATE,
+    BENCH_READY_TIMEOUT_S,
     GPU_HEADROOM_MB,
     MAX_GPU_MEMORY_FRACTION,
     MIN_CARD_MB,
@@ -72,6 +74,11 @@ def _resolved(name: str) -> ResolvedConfig:
 
 def _value_after(command: Sequence[str], flag: str) -> str:
     return command[list(command).index(flag) + 1]
+
+
+def _payload_for(command: Sequence[str]) -> dict[str, Any]:
+    """A bench result that completed every request the command sent."""
+    return dict(VLLM_PAYLOAD, completed=int(_value_after(command, "--num-prompts")))
 
 
 class _VllmProvider:
@@ -220,6 +227,7 @@ def test_vllm_bench_command_matches_parser_and_rig_operating_point() -> None:
     assert _value_after(command, "--result-filename") == result_path.name
     assert "--save-result" in command
     assert "--ignore-eos" in command
+    assert _value_after(command, "--ready-check-timeout-sec") == str(BENCH_READY_TIMEOUT_S)
 
 
 def test_native_vllm_latency_serves_and_benches_the_eval_artifact(tmp_path: Path) -> None:
@@ -239,7 +247,7 @@ def test_native_vllm_latency_serves_and_benches_the_eval_artifact(tmp_path: Path
 
     def run_json(command: Sequence[str], result_path: Path) -> dict[str, Any]:  # noqa: ARG001
         commands.append(list(command))
-        return dict(VLLM_PAYLOAD)
+        return _payload_for(command)
 
     machine = _FakeMachine()
     probe = NativeVllmLatency(
@@ -303,6 +311,58 @@ def test_native_vllm_latency_wraps_bench_failure_with_server_log() -> None:
     with pytest.raises(RuntimeError, match="out of device memory"):
         probe(provider, resolved, device="cuda", mode="full")
     assert process.terminated
+
+
+def test_native_vllm_latency_refuses_a_bench_with_failed_requests(tmp_path: Path) -> None:
+    resolved = _resolved("int4-gptq")
+    process = _FakeProcess()
+
+    def factory(
+        model: str,  # noqa: ARG001
+        *,
+        port: int,  # noqa: ARG001
+        log_path: Path,
+        gpu_fraction: float,  # noqa: ARG001
+    ) -> VllmServer:
+        log_path.write_text("Connection refused\n", encoding="utf-8")
+        return VllmServer(process, log_path)
+
+    def run_json(command: Sequence[str], result_path: Path) -> dict[str, Any]:  # noqa: ARG001
+        return dict(VLLM_PAYLOAD, completed=0)
+
+    probe = NativeVllmLatency(
+        run_json,
+        server_factory=factory,
+        pick_port=lambda: 1,
+        read_vram_mb=lambda: 0.0,
+        model_dims=lambda _: DIMS,
+        machine_probe=_FakeMachine(),
+        clock_lock=lambda: False,
+        gpu_fraction=lambda: SERVED_GPU_FRACTION,
+    )
+    provider = cast(LogitProvider, _VllmProvider(str(tmp_path)))
+    with pytest.raises(RuntimeError, match=r"completed 0 of(.|\n)*Connection refused"):
+        probe(provider, resolved, device="cuda", mode="full")
+    assert process.terminated
+
+
+def test_vllm_server_stop_reaps_its_process_group(tmp_path: Path) -> None:
+    # A shell that leaves a child behind, as vllm serve leaves its engine core. Reading
+    # "ready" first means the child exists before the stop, so terminate alone misses it.
+    process = subprocess.Popen(
+        ["sh", "-c", "sleep 60 & echo ready; sleep 60"],
+        stdout=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    assert process.stdout is not None
+    assert process.stdout.readline().strip() == "ready"
+    server = VllmServer(process, tmp_path / "serve.log")
+    server.stop()
+    process.stdout.close()
+    # ESRCH on Linux; macOS gives EPERM while the killed child is an unreaped zombie.
+    with pytest.raises((ProcessLookupError, PermissionError)):
+        os.killpg(process.pid, 0)
 
 
 def test_vllm_server_assert_alive_raises_with_log_tail(tmp_path: Path) -> None:
