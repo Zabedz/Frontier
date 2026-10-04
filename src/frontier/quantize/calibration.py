@@ -22,18 +22,31 @@ DatasetLoader = Callable[[str, str | None, str], Any]
 
 @dataclass(frozen=True, slots=True)
 class CorpusSpec:
-    """Where a calibration corpus lives and how each row renders to a string."""
+    """Where a calibration corpus lives and how each row renders to a string.
+
+    ``paragraphs`` joins that many consecutive prose lines of a ``text`` corpus into one
+    sample, after blank and heading lines are dropped.
+    """
 
     hf_path: str
     hf_config: str | None
     split: str
     render: Render
+    paragraphs: int = 1
+
+
+# WikiText-2 paragraphs run ~135 tokens against ~370 for an MMLU prompt, so three per sample
+# keep the two corpora's calibration token budgets level.
+PARAGRAPHS_PER_SAMPLE = 3
 
 
 # auxiliary_train is disjoint from the test subset the ECE is computed on, so the
 # calibration set cannot leak into the eval.
 CALIBRATION_CORPORA: dict[CalibrationCorpus, CorpusSpec] = {
     "in_domain": CorpusSpec("cais/mmlu", "all", "auxiliary_train", "mcq"),
+    "ood": CorpusSpec(
+        "Salesforce/wikitext", "wikitext-2-raw-v1", "train", "text", PARAGRAPHS_PER_SAMPLE
+    ),
 }
 
 
@@ -41,6 +54,23 @@ def _render_row(render: Render, row: Any) -> str:
     if render == "mcq":
         return build_prompt(str(row["question"]), _as_options(row["choices"]))
     return str(row["text"])
+
+
+def _prose_runs(dataset: Any, paragraphs: int) -> Any:
+    """Drop blank and ``= heading =`` lines, then join runs of ``paragraphs`` lines.
+
+    A trailing run shorter than ``paragraphs`` is dropped, so every sample is full length.
+    """
+    prose = [
+        line.strip()
+        for line in dataset["text"]
+        if line.strip() and not line.strip().startswith("=")
+    ]
+    runs = [
+        "\n\n".join(prose[start : start + paragraphs])
+        for start in range(0, len(prose) - paragraphs + 1, paragraphs)
+    ]
+    return type(dataset).from_dict({"text": runs})
 
 
 def _as_options(choices: Any) -> Sequence[str]:
@@ -76,6 +106,8 @@ def build_calibration_dataset(
         ) from None
     load = loader or _load_dataset
     dataset = load(spec.hf_path, spec.hf_config, spec.split)
+    if spec.render == "text":
+        dataset = _prose_runs(dataset, spec.paragraphs)
     dataset = dataset.shuffle(seed=seed).select(range(num_samples))
     rendered = dataset.map(lambda row: {"text": _render_row(spec.render, row)})
     return rendered.map(

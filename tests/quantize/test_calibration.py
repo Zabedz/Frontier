@@ -8,7 +8,7 @@ import datasets
 import pytest
 
 from frontier.eval.prompts import ANSWER_TRIGGER, INSTRUCTION
-from frontier.quantize.calibration import build_calibration_dataset
+from frontier.quantize.calibration import PARAGRAPHS_PER_SAMPLE, build_calibration_dataset
 
 N_ROWS = 12
 NUM_SAMPLES = 5
@@ -50,9 +50,13 @@ def _corpus() -> datasets.Dataset:
     )
 
 
-def _loader(corpus: datasets.Dataset) -> Any:
+MMLU_SOURCE = ("cais/mmlu", "all", "auxiliary_train")
+WIKITEXT_SOURCE = ("Salesforce/wikitext", "wikitext-2-raw-v1", "train")
+
+
+def _loader(corpus: datasets.Dataset, source: tuple[str, str, str] = MMLU_SOURCE) -> Any:
     def load(hf_path: str, hf_config: str | None, split: str) -> datasets.Dataset:
-        assert (hf_path, hf_config, split) == ("cais/mmlu", "all", "auxiliary_train")
+        assert (hf_path, hf_config, split) == source
         return corpus
 
     return load
@@ -99,10 +103,26 @@ def test_shuffle_is_seed_deterministic() -> None:
     assert first["input_ids"] == again["input_ids"]
 
 
+def test_ood_packs_wikitext_prose_and_drops_blanks_and_headings() -> None:
+    lines = ["", " = Article = \n", " p1 \n", " p2 \n", " p3 \n", "", " = = Section = = \n"]
+    lines += [" p4 \n", " p5 \n", " p6 \n", " p7 \n"]
+    tokenizer = _FakeTokenizer()
+    built = build_calibration_dataset(
+        "ood",
+        tokenizer,
+        num_samples=2,
+        max_seq_length=MAX_SEQ_LENGTH,
+        seed=0,
+        loader=_loader(datasets.Dataset.from_dict({"text": lines}), WIKITEXT_SOURCE),
+    )
+    assert len(built) == PARAGRAPHS_PER_SAMPLE - 1
+    assert sorted(tokenizer.seen) == ["p1\n\np2\n\np3", "p4\n\np5\n\np6"]
+
+
 def test_unwired_corpus_raises() -> None:
     with pytest.raises(ValueError, match="is not wired"):
         build_calibration_dataset(
-            "ood",
+            "none",
             _FakeTokenizer(),
             num_samples=1,
             max_seq_length=8,
