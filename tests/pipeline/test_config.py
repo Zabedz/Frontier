@@ -89,6 +89,21 @@ def test_missing_track_fails_validation(tmp_path: Path) -> None:
     _reject(tmp_path, "name: x\nfamily: baseline\n")
 
 
+def test_redux_labels_are_refused_at_resolve(tmp_path: Path) -> None:
+    variant = tmp_path / "variant.yaml"
+    variant.write_text(FP16.read_text() + "eval:\n  labels: redux\n")
+    with pytest.raises(ValueError, match="redux"):
+        resolve_config(variant, mode="full", config_root=CONFIG_ROOT)
+
+
+@pytest.mark.parametrize(
+    "profile", sorted(path.stem for path in (CONFIG_ROOT / "evals").glob("*.yaml"))
+)
+def test_every_eval_profile_resolves(profile: str) -> None:
+    resolved = resolve_config(FP16, eval_profile=profile, mode="full", config_root=CONFIG_ROOT)
+    assert resolved.eval_spec.labels == "raw"
+
+
 def test_typed_views() -> None:
     resolved = resolve_config(FP16, mode="smoke", config_root=CONFIG_ROOT)
     assert isinstance(resolved.eval_spec.seeds, tuple)

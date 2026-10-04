@@ -8,6 +8,6 @@ eval:
   prompt_style: zeroshot
   scoring: letter_softmax
   permutation_scheme: cyclic  # 4 cyclic orders for A-D; controls letter selection bias
-  labels: redux
+  labels: raw
   cot: false
   seeds: [0]

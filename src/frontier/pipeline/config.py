@@ -134,7 +134,14 @@ def _to_eval_spec(block: Mapping[str, Any]) -> EvalSpec:
     data = dict(block)
     if "seeds" in data:
         data["seeds"] = tuple(data["seeds"])
-    return EvalSpec(**data)
+    spec = EvalSpec(**data)
+    if spec.labels == "redux":
+        raise ValueError(
+            "eval.labels 'redux' is not runnable: load_mmlu_redux keeps the items its policy "
+            "drops and scoring reads the raw MMLU key, so the run would score the Redux pool "
+            "against raw labels. Use labels: raw."
+        )
+    return spec
 
 
 def _to_latency_spec(block: Mapping[str, Any]) -> LatencySpec:

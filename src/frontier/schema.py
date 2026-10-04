@@ -211,7 +211,7 @@ class EvalSpec:
     prompt_style: PromptStyle = "zeroshot"
     scoring: Scoring = "letter_softmax"
     permutation_scheme: PermutationScheme = "cyclic"
-    labels: Labels = "redux"
+    labels: Labels = "raw"
     cot: bool = False
     seeds: tuple[int, ...] = (0, 1, 2)
 
