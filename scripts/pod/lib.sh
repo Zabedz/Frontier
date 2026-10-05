@@ -22,6 +22,9 @@ _PUSH_EXCLUDES=(--exclude '.venv' --exclude 'results' --exclude 'plots' --exclud
 
 pod_ssh() { ssh "${_SSH_OPTS[@]}" "$POD_USER@$POD_HOST" "$@"; }
 
+# Where run_variants.sh and the jobs write checkpoints (outside $POD_DIR, on the volume).
+POD_CKPT_DIR="${POD_CKPT_DIR:-/workspace/checkpoints}"
+
 # The RunPod /workspace volume (MooseFS) rejects chown, so pushes must not preserve
 # owner/group/perms; -rltz carries content, links, and mtimes, which is all we need.
 _PUSH_FLAGS=(-rltz --no-owner --no-group --no-perms)
@@ -40,8 +43,8 @@ pod_push_results() {
 }
 pod_push_checkpoints() {
   [ -d "$LOCAL_REPO/checkpoints" ] || return 0
-  pod_ssh "mkdir -p $POD_DIR/checkpoints"
-  rsync "${_PUSH_FLAGS[@]}" -e "$_SSH_E" "$LOCAL_REPO/checkpoints/" "$POD_USER@$POD_HOST:$POD_DIR/checkpoints/"
+  pod_ssh "mkdir -p $POD_CKPT_DIR"
+  rsync "${_PUSH_FLAGS[@]}" -e "$_SSH_E" "$LOCAL_REPO/checkpoints/" "$POD_USER@$POD_HOST:$POD_CKPT_DIR/"
 }
 pod_pull_results() {
   mkdir -p "$LOCAL_REPO/results"
@@ -53,5 +56,5 @@ pod_pull_jobs() {
 }
 pod_pull_checkpoints() {
   mkdir -p "$LOCAL_REPO/checkpoints"
-  rsync "${_PULL_FLAGS[@]}" -e "$_SSH_E" "$POD_USER@$POD_HOST:$POD_DIR/checkpoints/" "$LOCAL_REPO/checkpoints/" 2>/dev/null || true
+  rsync "${_PULL_FLAGS[@]}" -e "$_SSH_E" "$POD_USER@$POD_HOST:$POD_CKPT_DIR/" "$LOCAL_REPO/checkpoints/" 2>/dev/null || true
 }

@@ -13,7 +13,7 @@ pod_ssh 'export PATH=$HOME/.local/bin:$PATH; command -v uv >/dev/null 2>&1 || (c
          export DEBIAN_FRONTEND=noninteractive; \
          (command -v tmux >/dev/null 2>&1 && command -v rsync >/dev/null 2>&1) || \
            (apt-get update -qq && apt-get install -y -qq tmux rsync >/dev/null 2>&1); \
-         mkdir -p '"$POD_DIR"'/.jobs '"$POD_DIR"'/results '"$POD_DIR"'/checkpoints '"$POD_DIR"'/hf-cache'
+         mkdir -p '"$POD_DIR"'/.jobs '"$POD_DIR"'/results '"$POD_CKPT_DIR"' '"$POD_DIR"'/hf-cache'
 
 # The venv must live on the fast local container disk, not the MooseFS /workspace
 # volume, or importing torch reads hundreds of .so files over the network (~48s vs
