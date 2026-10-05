@@ -1,0 +1,13 @@
+# Full MMLU test split (14,042 items) for the headline rows. Same scoring as primary-mmlu;
+# only the item count changes, so its intervals are ~2.6x narrower. Rows go to their own
+# result store, since a variant with rows under two config hashes is refused by the analysis.
+eval:
+  task_name: mmlu
+  split: test
+  subset_size: null
+  prompt_style: zeroshot
+  scoring: letter_softmax
+  permutation_scheme: cyclic
+  labels: raw
+  cot: false
+  seeds: [0]
