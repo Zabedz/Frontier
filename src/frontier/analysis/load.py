@@ -211,6 +211,33 @@ def load_split_predictions(
     )
 
 
+def load_seed_predictions(
+    tidy: pd.DataFrame, *, variant_name: str, task_name: str, root: Path
+) -> list[PredictionRows]:
+    """One ``PredictionRows`` per training seed, in seed order, for the seed-averaged
+    statistics. Unlike the pooled loaders, a seed whose sidecar is missing is an error.
+    """
+    subset = tidy[(tidy["variant_name"] == variant_name) & (tidy["task_name"] == task_name)]
+    pieces = _sidecars_for_variant(
+        tidy.sort_values("seed", kind="stable"), variant_name, task_name, root
+    )
+    seeds = sorted(int(seed) for seed in subset["seed"])
+    if len(pieces) != len(seeds):
+        raise MissingSidecarError(
+            f"variant {variant_name!r} on task {task_name!r} has rows for seeds {seeds} but "
+            f"{len(pieces)} sidecars under {root}"
+        )
+    return pieces
+
+
+def load_seed_split_predictions(
+    tidy: pd.DataFrame, *, variant_name: str, task_name: str, root: Path
+) -> list[tuple[PredictionRows, PredictionRows]]:
+    """Each training seed's sidecar split into ``(fit, report)``, in seed order."""
+    pieces = load_seed_predictions(tidy, variant_name=variant_name, task_name=task_name, root=root)
+    return [split_rows(piece) for piece in pieces]
+
+
 def _sidecars_for_variant(
     tidy: pd.DataFrame, variant_name: str, task_name: str, root: Path
 ) -> list[PredictionRows]:

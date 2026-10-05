@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -17,17 +17,21 @@ import pandas as pd
 import yaml
 
 from frontier.analysis._skipped import Skipped
-from frontier.analysis.load import load_predictions_for_variant
+from frontier.analysis.load import load_predictions_for_variant, load_seed_predictions
 from frontier.io.predictions import PredictionRows
 from frontier.metrics.bootstrap import (
     DEFAULT_RESAMPLES,
     ConfidenceInterval,
     RatioInterval,
+    SeededQuantity,
     paired_damage_gap_ci,
     paired_damage_ratio_ci,
     paired_delta_accuracy_ci,
     paired_delta_confidence_ci,
     paired_delta_ece_ci,
+    paired_seeded_ci,
+    paired_seeded_ratio_ci,
+    seeded_quantity,
 )
 from frontier.metrics.calibration import DEFAULT_BINS, DEFAULT_SWEEP
 
@@ -75,6 +79,9 @@ class PairSignificance:
     damage_gap: ConfidenceInterval
     damage_ratio: RatioInterval
     delta_ece_sweep: dict[int, ConfidenceInterval]
+    n_seeds: int = 1
+    # Per-seed point estimates as (min, max), one entry per quantity; empty at one seed.
+    seed_spread: dict[str, tuple[float, float]] = field(default_factory=dict)
 
     @property
     def confidence_shifted(self) -> bool:
@@ -118,8 +125,8 @@ def resolve_pairs(
 ) -> tuple[list[VariantPair], list[Skipped]]:
     """Pair every variant with the reference for its backend, on each task separately.
 
-    A variant carrying a different seed set from its reference is skipped: the sidecar
-    pooling concatenates seeds, so unequal sets would misalign the pairing.
+    A reference is one deterministic run, so one scored at several seeds is skipped. A
+    variant may carry any number of training seeds, each scoring the reference's items.
     """
     pairs: list[VariantPair] = []
     skipped: list[Skipped] = []
@@ -143,13 +150,13 @@ def resolve_pairs(
                 Skipped(variant, task, f"reference {reference} has no row on task {task}")
             )
             continue
-        if seeds[(reference, task)] != seeds[(variant, task)]:
+        if len(seeds[(reference, task)]) != 1:
             skipped.append(
                 Skipped(
                     variant,
                     task,
-                    f"seed sets differ: {variant} has {sorted(seeds[(variant, task)])}, "
-                    f"{reference} has {sorted(seeds[(reference, task)])}",
+                    f"reference {reference} is scored at seeds "
+                    f"{sorted(seeds[(reference, task)])}; a reference is one deterministic run",
                 )
             )
             continue
@@ -240,6 +247,73 @@ def pair_significance(
     )
 
 
+_SPREAD_QUANTITIES: tuple[SeededQuantity, ...] = (
+    "delta_accuracy",
+    "delta_confidence",
+    "delta_ece",
+    "damage_gap",
+)
+
+
+def pair_significance_seeded(
+    pair: VariantPair,
+    reference_rows: PredictionRows,
+    seed_rows: Sequence[PredictionRows],
+    *,
+    n_bins: int = DEFAULT_BINS,
+    sweep_bins: Sequence[int] = DEFAULT_SWEEP,
+    confidence_level: float = 0.95,
+    n_resamples: int = DEFAULT_RESAMPLES,
+    rng: int | None = 0,
+) -> PairSignificance:
+    """``pair_significance`` with the variant averaged over its training seeds.
+
+    Every seed copy is checked against the reference's items. ``seed_spread`` carries each
+    quantity's per-seed range, since three seeds are too few to resample over.
+    """
+    for rows in seed_rows:
+        _check_alignment(pair, reference_rows, rows)
+    reference = (reference_rows.confidence, reference_rows.correct)
+    seeds = [(rows.confidence, rows.correct) for rows in seed_rows]
+
+    def interval(quantity: SeededQuantity, bins: int = n_bins) -> ConfidenceInterval:
+        return paired_seeded_ci(
+            reference,
+            seeds,
+            quantity=quantity,
+            n_bins=bins,
+            confidence_level=confidence_level,
+            n_resamples=n_resamples,
+            rng=rng,
+        )
+
+    sweep = {bins: interval("delta_ece", bins) for bins in sorted({*sweep_bins, n_bins})}
+    spread: dict[str, tuple[float, float]] = {}
+    for quantity in _SPREAD_QUANTITIES:
+        per_seed = [seeded_quantity(quantity, reference, [seed], n_bins=n_bins) for seed in seeds]
+        spread[quantity] = (min(per_seed), max(per_seed))
+    return PairSignificance(
+        pair=pair,
+        n_items=int(reference_rows.gold.shape[0]),
+        n_bins=n_bins,
+        delta_accuracy=interval("delta_accuracy"),
+        delta_confidence=interval("delta_confidence"),
+        delta_ece=sweep[n_bins],
+        damage_gap=interval("damage_gap"),
+        damage_ratio=paired_seeded_ratio_ci(
+            reference,
+            seeds,
+            n_bins=n_bins,
+            confidence_level=confidence_level,
+            n_resamples=n_resamples,
+            rng=rng,
+        ),
+        delta_ece_sweep=sweep,
+        n_seeds=len(seeds),
+        seed_spread=spread,
+    )
+
+
 def significance_table(
     tidy: pd.DataFrame,
     *,
@@ -258,30 +332,51 @@ def significance_table(
     is a corrupted store.
     """
     pairs, skipped = resolve_pairs(tidy, references)
+    seeds = _seeds_by_variant(tidy)
     results: list[PairSignificance] = []
     for pair in pairs:
+        n_seeds = len(seeds[(pair.variant, pair.task)])
         try:
             reference_rows = load_predictions_for_variant(
                 tidy, variant_name=pair.reference, task_name=pair.task, root=root
             )
-            variant_rows = load_predictions_for_variant(
-                tidy, variant_name=pair.variant, task_name=pair.task, root=root
-            )
+            if n_seeds == 1:
+                variant_rows = load_predictions_for_variant(
+                    tidy, variant_name=pair.variant, task_name=pair.task, root=root
+                )
+            else:
+                seed_rows = load_seed_predictions(
+                    tidy, variant_name=pair.variant, task_name=pair.task, root=root
+                )
         except ValueError as missing:
             skipped.append(Skipped(pair.variant, pair.task, str(missing)))
             continue
-        results.append(
-            pair_significance(
-                pair,
-                reference_rows,
-                variant_rows,
-                n_bins=n_bins,
-                sweep_bins=sweep_bins,
-                confidence_level=confidence_level,
-                n_resamples=n_resamples,
-                rng=rng,
+        if n_seeds == 1:
+            results.append(
+                pair_significance(
+                    pair,
+                    reference_rows,
+                    variant_rows,
+                    n_bins=n_bins,
+                    sweep_bins=sweep_bins,
+                    confidence_level=confidence_level,
+                    n_resamples=n_resamples,
+                    rng=rng,
+                )
             )
-        )
+        else:
+            results.append(
+                pair_significance_seeded(
+                    pair,
+                    reference_rows,
+                    seed_rows,
+                    n_bins=n_bins,
+                    sweep_bins=sweep_bins,
+                    confidence_level=confidence_level,
+                    n_resamples=n_resamples,
+                    rng=rng,
+                )
+            )
     return results, skipped
 
 
@@ -323,6 +418,10 @@ def to_frame(results: Sequence[PairSignificance]) -> pd.DataFrame:
                     str(bins): [interval.low, interval.point, interval.high]
                     for bins, interval in item.delta_ece_sweep.items()
                 }
+            ),
+            "n_seeds": item.n_seeds,
+            "seed_spread": json.dumps(
+                {name: list(bounds) for name, bounds in item.seed_spread.items()}
             ),
         }
         for item in results

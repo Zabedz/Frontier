@@ -13,7 +13,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from frontier.analysis.holdout import NotRecalibratableError, is_fit
-from frontier.analysis.load import load_split_predictions, load_tidy
+from frontier.analysis.load import load_seed_split_predictions, load_split_predictions, load_tidy
 from frontier.analysis.repairability import (
     REPORT_FLOOR,
     Repairability,
@@ -21,6 +21,7 @@ from frontier.analysis.repairability import (
     check_alignment,
     fingerprint,
     pairs_to_frame,
+    repairability,
     repairability_pairs,
     repairability_table,
     to_frame,
@@ -433,3 +434,62 @@ def test_a_variant_spanning_two_config_hashes_is_skipped_not_raised(tmp_path: Pa
     )
     assert paired == []
     assert any("config hashes" in skip.reason for skip in pair_skipped)
+
+
+SEED_SHARPEN = {0: 0.45, 1: 0.55, 2: 0.65}
+
+
+def _seeded_store(tmp_path: Path) -> tuple[ResultStore, Path]:
+    """fp16 at one seed; int4-nf4 at three training seeds, each sharpened differently."""
+    rng = np.random.default_rng(5)
+    logits = rng.normal(0.0, 2.0, size=(N_ITEMS, 4))
+    gold = np.asarray([rng.choice(4, p=row) for row in _softmax(logits)], dtype=np.intp)
+    qids = [f"q{position}" for position in range(N_ITEMS)]
+    store = ResultStore(tmp_path)
+    base = sample_row()
+    runs = [("fp16", "0" * 64, 0, 1.0)]
+    runs += [("int4-nf4", "1" * 64, seed, sharpen) for seed, sharpen in SEED_SHARPEN.items()]
+    for name, config_hash, seed, sharpen in runs:
+        append_row(
+            replace(
+                base,
+                variant_name=name,
+                provenance=replace(base.provenance, config_hash=config_hash, seed=seed),
+            ),
+            store,
+        )
+        write_predictions_rows(
+            _sidecar(_softmax(logits / sharpen), gold, qids),
+            root=tmp_path,
+            key=predictions_key(config_hash, seed, "mmlu"),
+        )
+    return store, tmp_path
+
+
+def test_a_multi_seed_variant_averages_its_per_seed_fits(tmp_path: Path) -> None:
+    store, root = _seeded_store(tmp_path)
+    tidy = load_tidy(store)
+    found, skipped = repairability_table(tidy, root=root)
+    assert skipped == []
+    seeded = {item.variant: item for item in found}["int4-nf4"]
+    per_seed = [
+        repairability(fit, report, variant="int4-nf4", task="mmlu", backend="hf", family="ptq")
+        for fit, report in load_seed_split_predictions(
+            tidy, variant_name="int4-nf4", task_name="mmlu", root=root
+        )
+    ]
+    assert seeded.n_seeds == len(SEED_SHARPEN)
+    assert seeded.temperature == pytest.approx(np.mean([item.temperature for item in per_seed]))
+    assert seeded.ece_after == pytest.approx(np.mean([item.ece_after for item in per_seed]))
+
+
+def test_a_multi_seed_variant_pairs_against_its_one_seed_reference(tmp_path: Path) -> None:
+    store, root = _seeded_store(tmp_path)
+    found, skipped = repairability_pairs(
+        load_tidy(store), root=root, references={"hf": "fp16"}, n_resamples=19
+    )
+    assert [skip.variant for skip in skipped] == ["fp16"]  # the reference itself
+    (pair,) = found
+    assert pair.n_seeds == len(SEED_SHARPEN)
+    assert pair.residual_gap.usable
+    assert pair.residual_gap.low <= pair.residual_gap.point <= pair.residual_gap.high

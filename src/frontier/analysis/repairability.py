@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import blake2b
 from pathlib import Path
 
@@ -22,7 +22,11 @@ import pandas as pd
 
 from frontier.analysis._skipped import Skipped
 from frontier.analysis.holdout import NotRecalibratableError
-from frontier.analysis.load import MixedConfigHashError, load_split_predictions
+from frontier.analysis.load import (
+    MixedConfigHashError,
+    load_seed_split_predictions,
+    load_split_predictions,
+)
 from frontier.analysis.significance import VariantPair, resolve_pairs
 from frontier.io.predictions import MissingSidecarError, PredictionRows, QidArray
 from frontier.metrics.bootstrap import (
@@ -30,6 +34,7 @@ from frontier.metrics.bootstrap import (
     ResidualInterval,
     ScoredItems,
     paired_residual_ece_ci,
+    paired_seeded_residual_ece_ci,
     residual_ece,
 )
 from frontier.metrics.calibration import DEFAULT_BINS, ece_from_confidence, top_label
@@ -64,6 +69,7 @@ class Repairability:
     nll_before: float
     nll_after: float
     accuracy: float
+    n_seeds: int = 1  # above 1, every numeric field is the mean of per-seed fits
 
     @property
     def ece_removed_fraction(self) -> float:
@@ -146,6 +152,26 @@ def repairability_table(
         variant = str(first["variant_name"])
         task = str(first["task_name"])
         try:
+            if _seed_count(subset) > 1:
+                found.append(
+                    _seed_mean_repairability(
+                        [
+                            repairability(
+                                rows_fit,
+                                rows_report,
+                                variant=variant,
+                                task=task,
+                                backend=str(first["backend"]),
+                                family=str(first["family"]),
+                                n_bins=n_bins,
+                            )
+                            for rows_fit, rows_report in load_seed_split_predictions(
+                                tidy, variant_name=variant, task_name=task, root=root
+                            )
+                        ]
+                    )
+                )
+                continue
             rows_fit, rows_report = load_split_predictions(
                 tidy, variant_name=variant, task_name=task, root=root
             )
@@ -208,6 +234,7 @@ def to_frame(found: Sequence[Repairability]) -> pd.DataFrame:
                 "brier_reliability_after": item.brier_reliability_after,
                 "nll_before": item.nll_before,
                 "nll_after": item.nll_after,
+                "n_seeds": item.n_seeds,
             }
             for item in found
         ]
@@ -229,6 +256,7 @@ class RepairabilityPair:
     residual_variant: float
     residual_reference: float
     residual_gap: ResidualInterval
+    n_seeds: int = 1  # above 1, the variant's residual is the mean over its seed copies
 
     @property
     def variant_is_less_repairable(self) -> bool:
@@ -291,6 +319,22 @@ def repairability_pairs(
     pairs, skipped = resolve_pairs(tidy, references)
     found: list[RepairabilityPair] = []
     for pair in pairs:
+        subset = tidy[(tidy["variant_name"] == pair.variant) & (tidy["task_name"] == pair.task)]
+        if _seed_count(subset) > 1:
+            try:
+                found.append(
+                    _seeded_repairability_pair(
+                        tidy, pair, root=root, n_bins=n_bins, n_resamples=n_resamples, rng=rng
+                    )
+                )
+            except (
+                MissingSidecarError,
+                MixedConfigHashError,
+                NotRecalibratableError,
+                TemperatureFitError,
+            ) as reason:
+                skipped.append(Skipped(pair.variant, pair.task, str(reason)))
+            continue
         try:
             reference_fit, reference_report = load_split_predictions(
                 tidy, variant_name=pair.reference, task_name=pair.task, root=root
@@ -338,6 +382,77 @@ def repairability_pairs(
     return found, skipped
 
 
+def _seed_count(subset: pd.DataFrame) -> int:
+    return len({int(seed) for seed in subset["seed"]})
+
+
+def _seed_mean_repairability(per_seed: Sequence[Repairability]) -> Repairability:
+    """Average each seed's own fit; pooling the seeds would fit one temperature to three
+    different models."""
+
+    def mean(name: str) -> float:
+        return math.fsum(float(getattr(item, name)) for item in per_seed) / len(per_seed)
+
+    return replace(
+        per_seed[0],
+        temperature=mean("temperature"),
+        ece_before=mean("ece_before"),
+        ece_after=mean("ece_after"),
+        brier_reliability_before=mean("brier_reliability_before"),
+        brier_reliability_after=mean("brier_reliability_after"),
+        nll_before=mean("nll_before"),
+        nll_after=mean("nll_after"),
+        accuracy=mean("accuracy"),
+        n_seeds=len(per_seed),
+    )
+
+
+def _seeded_repairability_pair(
+    tidy: pd.DataFrame,
+    pair: VariantPair,
+    *,
+    root: Path,
+    n_bins: int,
+    n_resamples: int,
+    rng: int | None,
+) -> RepairabilityPair:
+    """The residual pair with the variant averaged over its training seeds."""
+    reference_fit, reference_report = load_split_predictions(
+        tidy, variant_name=pair.reference, task_name=pair.task, root=root
+    )
+    halves = load_seed_split_predictions(
+        tidy, variant_name=pair.variant, task_name=pair.task, root=root
+    )
+    for variant_fit, variant_report in halves:
+        check_alignment(pair, reference_report, variant_report, half="report")
+        check_alignment(pair, reference_fit, variant_fit, half="fit")
+    reference_fit_items = _scored(reference_fit, pair.reference)
+    reference_report_items = _scored(reference_report, pair.reference)
+    fits = [_scored(fit, pair.variant) for fit, _report in halves]
+    reports = [_scored(report, pair.variant) for _fit, report in halves]
+    gap = paired_seeded_residual_ece_ci(
+        reference_fit_items,
+        reference_report_items,
+        fits,
+        reports,
+        n_bins=n_bins,
+        n_resamples=n_resamples,
+        rng=rng,
+    )
+    residuals = [
+        residual_ece(fit, report, n_bins=n_bins) for fit, report in zip(fits, reports, strict=True)
+    ]
+    return RepairabilityPair(
+        pair=pair,
+        n_bins=n_bins,
+        n_report=int(reference_report.gold.shape[0]),
+        residual_variant=math.fsum(residuals) / len(residuals),
+        residual_reference=residual_ece(reference_fit_items, reference_report_items, n_bins=n_bins),
+        residual_gap=gap,
+        n_seeds=len(halves),
+    )
+
+
 def pairs_to_frame(found: Sequence[RepairabilityPair]) -> pd.DataFrame:
     """One row per pair."""
     return pd.DataFrame.from_records(
@@ -359,6 +474,7 @@ def pairs_to_frame(found: Sequence[RepairabilityPair]) -> pd.DataFrame:
                 "residual_gap_usable": item.residual_gap.usable,
                 "refused_resamples": item.residual_gap.refused_resamples,
                 "variant_is_less_repairable": item.variant_is_less_repairable,
+                "n_seeds": item.n_seeds,
             }
             for item in found
         ]

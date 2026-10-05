@@ -36,15 +36,19 @@ from frontier.metrics.report import calibration_report, to_quality
 from frontier.pipeline.config import DEFAULT_CONFIG_ROOT, ResolvedConfig, resolve_config
 from frontier.schema import Backend, EvalSpec, ResultRow, RunMode, VariantConfig
 
+# Every variant and every training seed scores this one question sample, so each seed's
+# sidecar pairs item for item with its reference. The seed picks the trained checkpoint.
+EVAL_SAMPLE_SEED = 0
+
 
 class ProviderFactory(Protocol):
-    """Builds the logit provider for a resolved variant on a device."""
+    """Builds the logit provider for a resolved variant and training seed on a device."""
 
-    def __call__(self, variant: VariantConfig, device: str) -> LogitProvider: ...
+    def __call__(self, variant: VariantConfig, device: str, *, seed: int) -> LogitProvider: ...
 
 
 class SliceLoader(Protocol):
-    """Loads the eval slice for a spec and seed."""
+    """Loads the eval slice for a spec, sampled with ``seed``."""
 
     def __call__(self, spec: EvalSpec, *, seed: int) -> list[EvalRecord]: ...
 
@@ -96,11 +100,11 @@ def run(
 ) -> list[ResultRow]:
     """Resolve, score, and append one row per seed in ``eval_spec.seeds``, in seed order.
 
-    The provider is built once and reused across seeds, because the model load is the
-    expensive step. Latency and memory are a property of the variant and the hardware, so
-    they are measured once before the seed loop and shared by every row;
-    ``measure_latency=False`` leaves those fields empty for a secondary profile that
-    analysis joins to the primary run's latency.
+    A seed is a training seed: each builds its own provider, and every seed scores the same
+    question sample, drawn once with ``EVAL_SAMPLE_SEED``. Latency and memory are a property
+    of the variant and the hardware, so they are measured once, on the first provider, and
+    shared by every row; ``measure_latency=False`` leaves those fields empty for a secondary
+    profile that analysis joins to the primary run's latency.
     """
     resolved = resolve_config(
         config_path, eval_profile=eval_profile, mode=mode, config_root=config_root
@@ -117,31 +121,32 @@ def run(
         return []
 
     device = resolve_device(mode)
-    provider = (
-        provider_factory(resolved.variant, device)
-        if provider_factory is not None
-        else build_provider(
-            resolved.variant,
-            resolved.backend,
-            device=device,
-            mode=mode,
-            checkpoints_root=checkpoints_root,
-            seed=resolved.eval_spec.seeds[0],
-        )
-    )
     load: Callable[..., list[EvalRecord]] = slice_loader or load_slice
+    records = load(resolved.eval_spec, seed=EVAL_SAMPLE_SEED)
     hardware = hardware_info(device=device)
     sha = git_sha if git_sha is not None else read_git_sha()
 
-    if measure_latency:
-        probe = latency_probe or build_latency_probe(resolved.backend, mode=mode)
-        lat_mem = probe(provider, resolved, device=device, mode=mode)
-    else:
-        lat_mem = LatencyMemory(latency=[], memory=[], tok_s_per_gb=math.nan)
-
+    lat_mem: LatencyMemory | None = None
     rows: list[ResultRow] = []
     for seed in pending:
-        records = load(resolved.eval_spec, seed=seed)
+        provider = (
+            provider_factory(resolved.variant, device, seed=seed)
+            if provider_factory is not None
+            else build_provider(
+                resolved.variant,
+                resolved.backend,
+                device=device,
+                mode=mode,
+                checkpoints_root=checkpoints_root,
+                seed=seed,
+            )
+        )
+        if lat_mem is None:
+            if measure_latency:
+                probe = latency_probe or build_latency_probe(resolved.backend, mode=mode)
+                lat_mem = probe(provider, resolved, device=device, mode=mode)
+            else:
+                lat_mem = LatencyMemory(latency=[], memory=[], tok_s_per_gb=math.nan)
         out = score_items(
             records,
             provider,

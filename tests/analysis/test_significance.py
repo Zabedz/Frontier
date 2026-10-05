@@ -20,6 +20,7 @@ from frontier.analysis.significance import (
     VariantPair,
     load_references,
     pair_significance,
+    pair_significance_seeded,
     resolve_pairs,
     significance_table,
     to_frame,
@@ -139,7 +140,9 @@ def test_resolve_pairs_skips_a_backend_with_no_configured_reference(tmp_path: Pa
     assert skipped[0].reason == "no reference configured for backend torchao"
 
 
-def test_resolve_pairs_skips_when_the_seed_sets_differ(tmp_path: Path) -> None:
+def test_resolve_pairs_pairs_a_multi_seed_variant_with_a_one_seed_reference(
+    tmp_path: Path,
+) -> None:
     store, _root = _store_with(
         tmp_path,
         [
@@ -148,9 +151,22 @@ def test_resolve_pairs_skips_when_the_seed_sets_differ(tmp_path: Path) -> None:
             _row(name="int4-nf4", backend="hf", track="A", config_hash="b" * 64, seed=1),
         ],
     )
+    pairs, _skipped = resolve_pairs(load_tidy(store), REFERENCES)
+    assert [pair.variant for pair in pairs] == ["int4-nf4"]
+
+
+def test_resolve_pairs_skips_a_reference_scored_at_several_seeds(tmp_path: Path) -> None:
+    store, _root = _store_with(
+        tmp_path,
+        [
+            _row(name="fp16", backend="hf", track="A", config_hash="a" * 64, seed=0),
+            _row(name="fp16", backend="hf", track="A", config_hash="a" * 64, seed=1),
+            _row(name="int4-nf4", backend="hf", track="A", config_hash="b" * 64, seed=0),
+        ],
+    )
     pairs, skipped = resolve_pairs(load_tidy(store), REFERENCES)
     assert pairs == []
-    assert any("seed sets differ" in skip.reason for skip in skipped)
+    assert any("one deterministic run" in skip.reason for skip in skipped)
 
 
 def test_resolve_pairs_is_empty_on_an_empty_frame(tmp_path: Path) -> None:
@@ -451,6 +467,8 @@ def test_to_frame_column_contract_is_stable() -> None:
         "accuracy_damage_high",
         "delta_ece_sign_stable",
         "delta_ece_sweep",
+        "n_seeds",
+        "seed_spread",
     }
     low, point, high = json.loads(str(frame["delta_ece_sweep"].iloc[0]))["10"]
     assert (low, point, high) == (
@@ -506,3 +524,43 @@ def test_confidence_shifted_reports_a_real_overconfidence_move() -> None:
     )
     assert outcome.confidence_shifted
     assert outcome.delta_confidence.excludes_zero
+
+
+def test_seeded_pair_at_one_seed_equals_the_one_seed_path() -> None:
+    gold = _gold()
+    reference = _predictions(gold, seed=1)
+    variant = _predictions(gold, seed=2, miscalibration=0.1)
+    one = pair_significance(_pair(), reference, variant, n_resamples=RESAMPLES)
+    seeded = pair_significance_seeded(_pair(), reference, [variant], n_resamples=RESAMPLES)
+    for name in ("delta_accuracy", "delta_confidence", "delta_ece", "damage_gap"):
+        assert getattr(seeded, name) == getattr(one, name), name
+    assert seeded.delta_ece_sweep == one.delta_ece_sweep
+    assert seeded.damage_ratio.point == one.damage_ratio.point
+    assert seeded.damage_ratio.denominator == one.damage_ratio.denominator
+
+
+def test_seeded_pair_reports_the_seed_count_and_each_quantity_spread() -> None:
+    gold = _gold()
+    reference = _predictions(gold, seed=1)
+    seeds = [_predictions(gold, seed=seed, miscalibration=0.1) for seed in (2, 3, 4)]
+    outcome = pair_significance_seeded(_pair(), reference, seeds, n_resamples=RESAMPLES)
+    assert outcome.n_seeds == len(seeds)
+    low, high = outcome.seed_spread["delta_ece"]
+    assert low <= outcome.delta_ece.point <= high
+    assert set(outcome.seed_spread) == {
+        "delta_accuracy",
+        "delta_confidence",
+        "delta_ece",
+        "damage_gap",
+    }
+
+
+def test_seeded_pair_refuses_a_seed_copy_over_other_items() -> None:
+    gold = _gold()
+    with pytest.raises(ValueError, match="describe different items"):
+        pair_significance_seeded(
+            _pair(),
+            _predictions(gold, seed=1),
+            [_predictions(gold, seed=2), _predictions(np.roll(gold, 1), seed=3)],
+            n_resamples=RESAMPLES,
+        )

@@ -117,7 +117,7 @@ def _records(n: int) -> list[EvalRecord]:
 
 
 def test_synthetic_runner_emits_one_valid_row(tmp_path: Path) -> None:
-    def factory(variant: VariantConfig, device: str) -> _SyntheticProvider:  # noqa: ARG001
+    def factory(variant: VariantConfig, device: str, *, seed: int) -> _SyntheticProvider:  # noqa: ARG001
         return _SyntheticProvider()
 
     def loader(spec: EvalSpec, *, seed: int) -> list[EvalRecord]:  # noqa: ARG001
@@ -177,7 +177,7 @@ def test_synthetic_runner_emits_one_valid_row(tmp_path: Path) -> None:
 
 
 def test_synthetic_runner_resumes_skipping_done_seeds(tmp_path: Path) -> None:
-    def factory(variant: VariantConfig, device: str) -> _SyntheticProvider:  # noqa: ARG001
+    def factory(variant: VariantConfig, device: str, *, seed: int) -> _SyntheticProvider:  # noqa: ARG001
         return _SyntheticProvider()
 
     def loader(spec: EvalSpec, *, seed: int) -> list[EvalRecord]:  # noqa: ARG001
@@ -196,7 +196,7 @@ def test_synthetic_runner_resumes_skipping_done_seeds(tmp_path: Path) -> None:
     )
     assert len(first) == 1
 
-    def exploding_factory(variant: VariantConfig, device: str) -> _SyntheticProvider:  # noqa: ARG001
+    def exploding_factory(variant: VariantConfig, device: str, *, seed: int) -> _SyntheticProvider:  # noqa: ARG001
         raise AssertionError("the provider must not be built when the run is already complete")
 
     second = run(
@@ -215,7 +215,7 @@ def test_synthetic_runner_resumes_skipping_done_seeds(tmp_path: Path) -> None:
 
 
 def test_synthetic_runner_skips_latency_when_disabled(tmp_path: Path) -> None:
-    def factory(variant: VariantConfig, device: str) -> _SyntheticProvider:  # noqa: ARG001
+    def factory(variant: VariantConfig, device: str, *, seed: int) -> _SyntheticProvider:  # noqa: ARG001
         return _SyntheticProvider()
 
     def loader(spec: EvalSpec, *, seed: int) -> list[EvalRecord]:  # noqa: ARG001
@@ -241,7 +241,7 @@ def test_synthetic_runner_skips_latency_when_disabled(tmp_path: Path) -> None:
 
 
 def test_synthetic_runner_skips_predictions_when_disabled(tmp_path: Path) -> None:
-    def factory(variant: VariantConfig, device: str) -> _SyntheticProvider:  # noqa: ARG001
+    def factory(variant: VariantConfig, device: str, *, seed: int) -> _SyntheticProvider:  # noqa: ARG001
         return _SyntheticProvider()
 
     def loader(spec: EvalSpec, *, seed: int) -> list[EvalRecord]:  # noqa: ARG001
@@ -269,7 +269,7 @@ def test_a_failed_sidecar_write_leaves_no_row_to_skip_on_retry(
     """The store drives resume-skip, so a row banked ahead of a failed sidecar write would
     be skipped forever with its per-item arrays unrecoverable."""
 
-    def factory(variant: VariantConfig, device: str) -> _SyntheticProvider:  # noqa: ARG001
+    def factory(variant: VariantConfig, device: str, *, seed: int) -> _SyntheticProvider:  # noqa: ARG001
         return _SyntheticProvider()
 
     def loader(spec: EvalSpec, *, seed: int) -> list[EvalRecord]:  # noqa: ARG001
@@ -299,3 +299,53 @@ def test_a_failed_sidecar_write_leaves_no_row_to_skip_on_retry(
     monkeypatch.undo()
     assert len(go()) == 1
     assert (tmp_path / "predictions").exists()
+
+
+def test_training_seeds_build_one_provider_each_over_one_question_sample(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Full mode keeps the variant's seeds (smoke pins one); the device stays on CPU.
+    monkeypatch.setattr(runner_module, "resolve_device", lambda mode: "cpu")  # noqa: ARG005
+    variant_path = tmp_path / "three-seeds.yaml"
+    variant_path.write_text(FP16.read_text() + "eval:\n  seeds: [0, 1, 2]\n", encoding="utf-8")
+    built: list[int] = []
+    loaded: list[int] = []
+    probed: list[LogitProvider] = []
+
+    def factory(variant: VariantConfig, device: str, *, seed: int) -> _SyntheticProvider:  # noqa: ARG001
+        built.append(seed)
+        return _SyntheticProvider()
+
+    def loader(spec: EvalSpec, *, seed: int) -> list[EvalRecord]:  # noqa: ARG001
+        loaded.append(seed)
+        return _records(N_ITEMS)
+
+    def probe(
+        provider: LogitProvider, resolved: ResolvedConfig, *, device: str, mode: RunMode
+    ) -> LatencyMemory:
+        probed.append(provider)
+        return _canned_latency(provider, resolved, device=device, mode=mode)
+
+    rows = run(
+        variant_path,
+        mode="full",
+        config_root=CONFIG_ROOT,
+        results_root=tmp_path,
+        provider_factory=factory,
+        slice_loader=loader,
+        timestamp="2026-07-13T00:00:00+00:00",
+        git_sha="deadbeef",
+        latency_probe=probe,
+    )
+
+    assert [row.provenance.seed for row in rows] == [0, 1, 2]
+    assert built == [0, 1, 2]
+    assert loaded == [runner_module.EVAL_SAMPLE_SEED]
+    assert len(probed) == 1
+    qids = []
+    for row in rows:
+        key = predictions_key(row.provenance.config_hash, row.provenance.seed, "mmlu")
+        qid = read_predictions(tmp_path, key).qid
+        assert qid is not None
+        qids.append(qid)
+    assert all(np.array_equal(qid, qids[0]) for qid in qids)

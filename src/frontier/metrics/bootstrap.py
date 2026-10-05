@@ -38,6 +38,14 @@ DEFAULT_RESAMPLES = 9999
 SHIFT_ROWS = 4
 
 ShiftMetric = Literal["ece", "confidence"]
+SeededQuantity = Literal[
+    "delta_accuracy",
+    "delta_confidence",
+    "delta_ece",
+    "damage_gap",
+    "accuracy_damage",
+    "damage_ratio",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -570,6 +578,215 @@ def paired_residual_ece_ci(
                     reference_fit, reference_report, fit_rows, report_rows, n_bins=n_bins
                 )
             )
+        except TemperatureFitError:
+            refused += 1
+    if not drawn:  # defensive: the full-sample fit above refuses before this can happen
+        raise TemperatureFitError(f"every one of {n_resamples} resamples refused a temperature fit")
+    alpha = (1.0 - confidence_level) / 2.0
+    low, high = np.quantile(np.asarray(drawn), [alpha, 1.0 - alpha])
+    return ResidualInterval(
+        point=point,
+        low=float(low),
+        high=float(high),
+        refused_resamples=refused,
+        n_resamples=n_resamples,
+    )
+
+
+def _seed_mean(values: Sequence[float]) -> float:
+    return math.fsum(values) / len(values)
+
+
+def seeded_quantity(
+    quantity: SeededQuantity,
+    reference: tuple[FloatArray, CorrectArray],
+    seeds: Sequence[tuple[FloatArray, CorrectArray]],
+    *,
+    n_bins: int = DEFAULT_BINS,
+    scheme: BinScheme = "equal_width",
+    weighting: Weighting = "mass",
+) -> float:
+    """One paired quantity with the variant side averaged over its seed copies.
+
+    Each seed copy is scored on its own and its accuracy, ECE, and mean confidence are
+    averaged, so every ECE carries the same finite-sample floor as the reference's. Pooling
+    the copies into one sample would lower the variant's floor and flatter its calibration.
+    The damages follow ``relative_damages``: ``nan`` where a reference value is zero.
+    """
+    ref_confidence, ref_correct = reference
+    ece_ref = ece_from_confidence(
+        ref_confidence, ref_correct, n_bins=n_bins, scheme=scheme, weighting=weighting
+    )
+    accuracy_ref = float(np.mean(ref_correct))
+    ece_var = _seed_mean(
+        [
+            ece_from_confidence(conf, corr, n_bins=n_bins, scheme=scheme, weighting=weighting)
+            for conf, corr in seeds
+        ]
+    )
+    accuracy_var = _seed_mean([float(np.mean(corr)) for _conf, corr in seeds])
+    if quantity == "delta_accuracy":
+        return accuracy_var - accuracy_ref
+    if quantity == "delta_confidence":
+        return _seed_mean([float(np.mean(conf)) for conf, _corr in seeds]) - float(
+            np.mean(ref_confidence)
+        )
+    if quantity == "delta_ece":
+        return ece_var - ece_ref
+    calibration_damage = math.nan if ece_ref == 0.0 else (ece_var - ece_ref) / ece_ref
+    accuracy_damage = (
+        math.nan if accuracy_ref == 0.0 else (accuracy_ref - accuracy_var) / accuracy_ref
+    )
+    if quantity == "accuracy_damage":
+        return accuracy_damage
+    if quantity == "damage_gap":
+        return calibration_damage - accuracy_damage
+    return math.nan if accuracy_damage == 0.0 else calibration_damage / accuracy_damage
+
+
+def _seeded_arrays(
+    reference: tuple[FloatArray, CorrectArray], seeds: Sequence[tuple[FloatArray, CorrectArray]]
+) -> tuple[FloatArray | CorrectArray, ...]:
+    if not seeds:
+        raise ValueError("a seeded statistic needs at least one seed copy")
+    lengths = {int(array.shape[0]) for pair in (reference, *seeds) for array in pair}
+    if len(lengths) != 1:
+        raise ValueError(f"every seed copy must cover the reference's items, got {sorted(lengths)}")
+    return tuple(array for pair in (reference, *seeds) for array in pair)
+
+
+def _seeded_statistic(
+    quantity: SeededQuantity, *, n_bins: int, scheme: BinScheme, weighting: Weighting
+) -> Callable[..., float]:
+    def statistic(*arrays: FloatArray | CorrectArray) -> float:
+        pairs = [
+            (
+                np.asarray(arrays[index], dtype=np.float64),
+                np.asarray(arrays[index + 1], dtype=np.bool_),
+            )
+            for index in range(0, len(arrays), 2)
+        ]
+        return seeded_quantity(
+            quantity, pairs[0], pairs[1:], n_bins=n_bins, scheme=scheme, weighting=weighting
+        )
+
+    return statistic
+
+
+def paired_seeded_ci(
+    reference: tuple[FloatArray, CorrectArray],
+    seeds: Sequence[tuple[FloatArray, CorrectArray]],
+    *,
+    quantity: SeededQuantity,
+    n_bins: int = DEFAULT_BINS,
+    scheme: BinScheme = "equal_width",
+    weighting: Weighting = "mass",
+    confidence_level: float = 0.95,
+    n_resamples: int = DEFAULT_RESAMPLES,
+    rng: np.random.Generator | int | None = None,
+) -> ConfidenceInterval:
+    """Paired percentile interval on ``quantity``, the variant averaged over its seeds.
+
+    ``reference`` and every seed copy are ``(confidence, correct)`` on the same items in the
+    same order, so one index vector resamples them all.
+    """
+    arrays = _seeded_arrays(reference, seeds)
+    statistic = _seeded_statistic(quantity, n_bins=n_bins, scheme=scheme, weighting=weighting)
+    low, high, _distribution = _paired_percentile_ci(
+        arrays, statistic, confidence_level=confidence_level, n_resamples=n_resamples, rng=rng
+    )
+    return ConfidenceInterval(point=statistic(*arrays), low=low, high=high)
+
+
+def paired_seeded_ratio_ci(
+    reference: tuple[FloatArray, CorrectArray],
+    seeds: Sequence[tuple[FloatArray, CorrectArray]],
+    *,
+    n_bins: int = DEFAULT_BINS,
+    scheme: BinScheme = "equal_width",
+    weighting: Weighting = "mass",
+    confidence_level: float = 0.95,
+    n_resamples: int = DEFAULT_RESAMPLES,
+    rng: np.random.Generator | int | None = None,
+) -> RatioInterval:
+    """The damage ratio over seed copies, with ``paired_damage_ratio_ci``'s usability rule."""
+    arrays = _seeded_arrays(reference, seeds)
+    ratio = _seeded_statistic("damage_ratio", n_bins=n_bins, scheme=scheme, weighting=weighting)
+    denominator = _seeded_statistic(
+        "accuracy_damage", n_bins=n_bins, scheme=scheme, weighting=weighting
+    )
+    # A nan quantile from an undefined resample draws a BCa warning that does not apply here.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DegenerateDataWarning)
+        low, high, distribution = _paired_percentile_ci(
+            arrays, ratio, confidence_level=confidence_level, n_resamples=n_resamples, rng=rng
+        )
+    nonfinite = int(np.count_nonzero(~np.isfinite(distribution)))
+    denominator_low, denominator_high, _denominator_distribution = _paired_percentile_ci(
+        arrays, denominator, confidence_level=confidence_level, n_resamples=n_resamples, rng=rng
+    )
+    return RatioInterval(
+        point=ratio(*arrays),
+        low=math.nan if nonfinite else low,
+        high=math.nan if nonfinite else high,
+        denominator=ConfidenceInterval(
+            point=denominator(*arrays), low=denominator_low, high=denominator_high
+        ),
+        nonfinite_resamples=nonfinite,
+        n_resamples=int(distribution.size),
+    )
+
+
+def paired_seeded_residual_ece_ci(
+    reference_fit: ScoredItems,
+    reference_report: ScoredItems,
+    variant_fits: Sequence[ScoredItems],
+    variant_reports: Sequence[ScoredItems],
+    *,
+    n_bins: int = DEFAULT_BINS,
+    confidence_level: float = 0.95,
+    n_resamples: int = DEFAULT_RESAMPLES,
+    rng: np.random.Generator | int | None = None,
+) -> ResidualInterval:
+    """``paired_residual_ece_ci`` with the variant's residual averaged over seed copies.
+
+    Each copy fits its own temperature on the shared fit rows and reports on the shared
+    report rows. A resample is refused when any copy's fit refuses.
+    """
+    if not variant_fits or len(variant_fits) != len(variant_reports):
+        raise ValueError(
+            f"need one fit and one report half per seed, got {len(variant_fits)} and "
+            f"{len(variant_reports)}"
+        )
+    n_fit = reference_fit.gold.shape[0]
+    n_report = reference_report.gold.shape[0]
+    for fit, report in zip(variant_fits, variant_reports, strict=True):
+        if fit.gold.shape[0] != n_fit or report.gold.shape[0] != n_report:
+            raise ValueError(
+                f"every seed copy must match the reference halves ({n_fit} fit, {n_report} "
+                f"report), got {fit.gold.shape[0]} and {report.gold.shape[0]}"
+            )
+
+    def difference(fit_rows: IntArray | None, report_rows: IntArray | None) -> float:
+        variant = _seed_mean(
+            [
+                residual_ece(fit, report, fit_rows, report_rows, n_bins=n_bins)
+                for fit, report in zip(variant_fits, variant_reports, strict=True)
+            ]
+        )
+        return variant - residual_ece(
+            reference_fit, reference_report, fit_rows, report_rows, n_bins=n_bins
+        )
+
+    generator = _normalise_rng(rng) or np.random.default_rng()
+    point = difference(None, None)
+    drawn: list[float] = []
+    refused = 0
+    for _ in range(n_resamples):
+        fit_rows = generator.integers(0, n_fit, size=n_fit)
+        report_rows = generator.integers(0, n_report, size=n_report)
+        try:
+            drawn.append(difference(fit_rows, report_rows))
         except TemperatureFitError:
             refused += 1
     if not drawn:  # defensive: the full-sample fit above refuses before this can happen
