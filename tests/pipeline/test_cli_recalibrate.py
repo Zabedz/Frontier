@@ -6,6 +6,7 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+import click
 import numpy as np
 import pandas as pd
 import pytest
@@ -108,5 +109,6 @@ def test_a_missing_reference_map_is_a_usage_error_not_a_traceback(
     monkeypatch.chdir(tmp_path)
     result = CliRunner().invoke(app, ["recalibrate", "--results", str(tmp_path)])
     assert result.exit_code == USAGE_ERROR, result.output
-    assert "--references" in result.output
+    # FORCE_COLOR styles the usage panel even under CliRunner, splitting the option name.
+    assert "--references" in click.unstyle(result.output)
     assert not isinstance(result.exception, FileNotFoundError)
