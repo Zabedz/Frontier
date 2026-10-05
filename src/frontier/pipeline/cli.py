@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     import pandas as pd
 
     from frontier.analysis._skipped import Skipped
+    from frontier.analysis.calibration_set import CorpusShift, ShiftContrast
     from frontier.analysis.frontier_chart import ColorBy
     from frontier.analysis.load import XCost
     from frontier.analysis.repairability import Repairability, RepairabilityPair
@@ -351,6 +352,120 @@ def _summarise_coverage(rows: list[CoverageRow], destination: Path) -> None:
         )
     _console.print(table)
     _console.print(f"wrote {destination}")
+
+
+@app.command("calibration-set")
+def calibration_set(
+    results: Annotated[Path, typer.Option("--results", help="Result store root.")] = Path(
+        "results"
+    ),
+    task: Annotated[
+        str | None, typer.Option("--task", help="Restrict to one task_name (default: all).")
+    ] = None,
+    plan: Annotated[
+        Path | None,
+        typer.Option(
+            "--plan",
+            exists=True,
+            dir_okay=False,
+            help="Twin map and contrast (default: configs/analysis/calibration_set.yaml).",
+        ),
+    ] = None,
+    bins: Annotated[int, typer.Option("--bins", help="Bin count for the ECE.")] = DEFAULT_BINS,
+    resamples: Annotated[
+        int, typer.Option("--resamples", min=1, help="Bootstrap resamples per interval.")
+    ] = DEFAULT_RESAMPLES,
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Parquet output (default: <results>/calibration_set.parquet)."),
+    ] = None,
+) -> None:
+    """Measure what moving the calibration corpus out of domain does to each method.
+
+    Pairs each out-of-domain variant with its in-domain twin on the same items, then
+    differences two methods' shifts for the pre-registered contrast.
+    """
+    from frontier.analysis import load_tidy  # noqa: PLC0415
+    from frontier.analysis.calibration_set import (  # noqa: PLC0415
+        DEFAULT_PLAN_PATH,
+        calibration_set_table,
+        contrasts_to_frame,
+        load_plan,
+        shifts_to_frame,
+    )
+
+    plan_path = DEFAULT_PLAN_PATH if plan is None else plan
+    if not plan_path.is_file():
+        raise typer.BadParameter(
+            f"no calibration-set plan at {plan_path}; the default is relative to the repo root, "
+            f"so pass --plan when running from elsewhere",
+            param_hint="--plan",
+        )
+    tidy = load_tidy(ResultStore(results), task_name=task)
+    shifts, contrasts, skipped = calibration_set_table(
+        tidy, root=results, plan=load_plan(plan_path), n_bins=bins, n_resamples=resamples
+    )
+    destination = out if out is not None else results / "calibration_set.parquet"
+    contrast_destination = destination.with_name(f"{destination.stem}_contrast.parquet")
+    if shifts:
+        _write_parquet(shifts_to_frame(shifts), destination)
+    if contrasts:
+        _write_parquet(contrasts_to_frame(contrasts), contrast_destination)
+    _summarise_calibration_set(
+        shifts,
+        contrasts,
+        skipped,
+        destination if shifts else None,
+        contrast_destination if contrasts else None,
+    )
+
+
+def _summarise_calibration_set(
+    shifts: list[CorpusShift],
+    contrasts: list[ShiftContrast],
+    skipped: list[Skipped],
+    destination: Path | None,
+    contrast_destination: Path | None,
+) -> None:
+    for skip in skipped:
+        _console.print(f"[yellow]skipped {skip.variant} on {skip.task}: {skip.reason}[/yellow]")
+    if shifts:
+        table = Table(title="Out-of-domain minus in-domain calibration corpus (paired)")
+        for column in ("pair", "n", "d accuracy", "d ECE", "d confidence", "same answer"):
+            table.add_column(column, overflow="fold")
+        for shift in shifts:
+            table.add_row(
+                f"{shift.variant} vs {shift.twin}",
+                str(shift.n_items),
+                _interval(
+                    shift.delta_accuracy.point, shift.delta_accuracy.low, shift.delta_accuracy.high
+                ),
+                _interval(shift.delta_ece.point, shift.delta_ece.low, shift.delta_ece.high),
+                _interval(
+                    shift.delta_confidence.point,
+                    shift.delta_confidence.low,
+                    shift.delta_confidence.high,
+                ),
+                f"{shift.answer_agreement:.3f}",
+            )
+        _console.print(table)
+    if contrasts:
+        table = Table(title="Corpus shift contrast (first minus second)")
+        for column in ("contrast", "n", "ECE", "confidence"):
+            table.add_column(column, overflow="fold")
+        for contrast in contrasts:
+            table.add_row(
+                f"{contrast.first} - {contrast.second}",
+                str(contrast.n_items),
+                _interval(contrast.ece.point, contrast.ece.low, contrast.ece.high),
+                _interval(
+                    contrast.confidence.point, contrast.confidence.low, contrast.confidence.high
+                ),
+            )
+        _console.print(table)
+    for written in (destination, contrast_destination):
+        if written is not None:
+            _console.print(f"wrote {written}")
 
 
 def _reference_map(references: Path | None) -> dict[str, str]:

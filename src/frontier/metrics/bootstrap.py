@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import math
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 from scipy.stats import DegenerateDataWarning, bootstrap  # type: ignore[import-untyped]
@@ -33,6 +34,10 @@ from frontier.metrics.recalibration import (
 )
 
 DEFAULT_RESAMPLES = 9999
+# before_1, after_1, before_2, after_2 for a shift difference.
+SHIFT_ROWS = 4
+
+ShiftMetric = Literal["ece", "confidence"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,6 +256,53 @@ def paired_delta_ece_ci(
     )
     interval = result.confidence_interval
     return ConfidenceInterval(point=point, low=float(interval.low), high=float(interval.high))
+
+
+def paired_shift_difference_ci(
+    confidence: Sequence[FloatArray],
+    correct: Sequence[CorrectArray],
+    *,
+    metric: ShiftMetric,
+    n_bins: int = DEFAULT_BINS,
+    confidence_level: float = 0.95,
+    n_resamples: int = DEFAULT_RESAMPLES,
+    rng: np.random.Generator | int | None = None,
+) -> ConfidenceInterval:
+    """Interval on ``(after_1 - before_1) - (after_2 - before_2)`` for one metric.
+
+    ``confidence`` and ``correct`` hold four rows each, ordered before_1, after_1, before_2,
+    after_2, all on the same items, so one index vector resamples all eight arrays.
+    ``metric="confidence"`` contrasts mean stated confidence and leaves ``correct`` unread.
+    """
+    if len(confidence) != SHIFT_ROWS or len(correct) != SHIFT_ROWS:
+        raise ValueError(
+            f"a shift difference needs {SHIFT_ROWS} rows of each array, got "
+            f"{len(confidence)} confidence and {len(correct)} correct"
+        )
+    lengths = {int(array.shape[0]) for array in (*confidence, *correct)}
+    if len(lengths) != 1:
+        raise ValueError(f"the four rows must cover the same items, got lengths {sorted(lengths)}")
+
+    def value(conf: FloatArray, corr: CorrectArray) -> float:
+        if metric == "ece":
+            return ece_from_confidence(conf, corr, n_bins=n_bins)
+        return float(np.mean(conf))
+
+    def statistic(*arrays: FloatArray | CorrectArray) -> float:
+        values = [
+            value(
+                np.asarray(arrays[row], dtype=np.float64),
+                np.asarray(arrays[SHIFT_ROWS + row], dtype=np.bool_),
+            )
+            for row in range(SHIFT_ROWS)
+        ]
+        return (values[1] - values[0]) - (values[3] - values[2])
+
+    arrays: tuple[FloatArray | CorrectArray, ...] = (*confidence, *correct)
+    low, high, _distribution = _paired_percentile_ci(
+        arrays, statistic, confidence_level=confidence_level, n_resamples=n_resamples, rng=rng
+    )
+    return ConfidenceInterval(point=statistic(*arrays), low=low, high=high)
 
 
 def _paired_percentile_ci(

@@ -1,0 +1,11 @@
+# The calibration-set axis (methodology section 7). Each out-of-domain variant pairs with
+# its in-domain twin, the variant that differs from it only in quant.calibration_corpus.
+pairs:
+  int4-gptq-ood: int4-gptq
+  int4-awq-ood: int4-awq
+
+# The pre-registered contrast: an out-of-domain corpus should move AWQ, whose scales come
+# from activation statistics, more than GPTQ. Reported as first's shift minus second's.
+contrast:
+  first: int4-awq-ood
+  second: int4-gptq-ood
