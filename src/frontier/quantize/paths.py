@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from frontier.quantize.methods import QAT_LORA_METHOD, is_qat_method
 from frontier.quantize.recipes import recipe_for
 from frontier.schema import VariantConfig
 
@@ -42,10 +43,11 @@ def checkpoint_path(
     vLLM lands at ``root/compressed_tensors/<slug>/<kind>-<corpus>-<samples>s-g<group>``,
     with ``-s<seed>`` appended for a calibrating variant's non-zero seed, and llama.cpp at
     ``root/gguf/<slug>.<weight_dtype>.gguf``. A data-free checkpoint is the same for every
-    seed, so its path ignores the seed. Raises ``ValueError`` for
-    ``hf`` and ``torchao``, which quantise the base model in-process and produce no
-    checkpoint, and for a vLLM variant with no ``quant`` block, which is the FP16 gate
-    serving the base model directly.
+    seed, so its path ignores the seed. A torchao QAT run lands at
+    ``root/torchao_qat/<slug>/<lora<r>|full>-int<bits>-g<group>-<corpus>-<tokens>t``, seeds
+    1+ suffixed as above. Raises ``ValueError`` for ``hf`` and torchao PTQ, which quantise
+    the base model in-process and produce no checkpoint, and for a vLLM variant with no
+    ``quant`` block, which is the FP16 gate serving the base model directly.
     """
     inference_backend = backend["inference_backend"]
     slug = model_slug(variant.model.model_id)
@@ -65,7 +67,23 @@ def checkpoint_path(
         return root / "compressed_tensors" / slug / name
     if inference_backend == "llama_cpp":
         return root / "gguf" / f"{slug}.{backend['weight_dtype']}.gguf"
+    if inference_backend == "torchao" and variant.quant and is_qat_method(variant.quant.method):
+        return root / "torchao_qat" / slug / _qat_name(variant, seed)
     raise ValueError(
         f"backend {inference_backend!r} has no produced checkpoint "
         f"(hf/torchao load or quantise the base model in-process)"
     )
+
+
+def _qat_name(variant: VariantConfig, seed: int) -> str:
+    assert variant.quant is not None
+    qat = variant.qat
+    if qat is None:
+        raise ValueError(f"QAT variant {variant.name!r} has no qat block")
+    kind = f"lora{qat.lora_rank}" if variant.quant.method == QAT_LORA_METHOD else "full"
+    name = (
+        f"{kind}-int{variant.quant.bit_width}-g{variant.quant.group_size}-"
+        f"{qat.corpus}-{qat.train_tokens}t"
+    )
+    # Seed 0 keeps the bare name, as the PTQ calibration seeds do.
+    return f"{name}-s{seed}" if seed else name

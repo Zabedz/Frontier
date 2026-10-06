@@ -22,6 +22,7 @@ from frontier.schema import (
     EvalSpec,
     LatencySpec,
     ModelSpec,
+    QATSpec,
     QuantSpec,
     RunMode,
     VariantConfig,
@@ -117,6 +118,7 @@ def _load_schema(config_root: Path) -> dict[str, Any]:
 
 def _to_variant_config(raw: Mapping[str, Any]) -> VariantConfig:
     quant = raw.get("quant")
+    qat = raw.get("qat")
     distill = raw.get("distill")
     return VariantConfig(
         name=raw["name"],
@@ -126,6 +128,7 @@ def _to_variant_config(raw: Mapping[str, Any]) -> VariantConfig:
         eval=_to_eval_spec(raw.get("eval", {})),
         latency=_to_latency_spec(raw.get("latency", {})),
         quant=QuantSpec(**quant) if quant else None,
+        qat=QATSpec(**qat) if qat else None,
         distill=DistillSpec(**distill) if distill else None,
     )
 

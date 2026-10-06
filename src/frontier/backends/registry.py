@@ -16,10 +16,9 @@ from frontier.backends.vllm import VllmLogitProvider
 from frontier.eval.provider import LogitProvider
 from frontier.latency.native import NativeLlamaCppLatency, NativeVllmLatency
 from frontier.latency.rig import default_latency
+from frontier.quantize.methods import TORCHAO_PTQ_METHOD, is_qat_method
 from frontier.quantize.paths import checkpoint_path
 from frontier.schema import RunMode, VariantConfig
-
-TORCHAO_PTQ_METHOD = "torchao-intx"
 
 if TYPE_CHECKING:
     from frontier.pipeline.runner import LatencyProbe
@@ -41,7 +40,9 @@ def build_provider(
     """
     inference_backend = backend["inference_backend"]
     if inference_backend == "torchao":
-        return _torchao_provider(variant, backend, device=device)
+        return _torchao_provider(
+            variant, backend, device=device, checkpoints_root=checkpoints_root, seed=seed
+        )
     if mode == "smoke" or inference_backend == "hf":
         return HFLogitProvider(
             model_id=variant.model.model_id,
@@ -77,18 +78,25 @@ def build_provider(
 
 
 def _torchao_provider(
-    variant: VariantConfig, backend: Mapping[str, Any], *, device: str
+    variant: VariantConfig,
+    backend: Mapping[str, Any],
+    *,
+    device: str,
+    checkpoints_root: Path,
+    seed: int,
 ) -> LogitProvider:
+    """PTQ quantises the base model on load; QAT quantises its trained checkpoint the same way."""
     quant = variant.quant
     if quant is None:
         raise ValueError(f"torchao variant {variant.name!r} has no quant block")
-    if quant.method != TORCHAO_PTQ_METHOD:
-        raise NotImplementedError(
-            f"torchao method {quant.method!r} needs a trained checkpoint; only "
-            f"{TORCHAO_PTQ_METHOD!r} (PTQ on load) is wired"
-        )
+    if is_qat_method(quant.method):
+        model_id = str(checkpoint_path(variant, backend, root=checkpoints_root, seed=seed))
+    elif quant.method == TORCHAO_PTQ_METHOD:
+        model_id = variant.model.model_id
+    else:
+        raise ValueError(f"unknown torchao method {quant.method!r}")
     return TorchaoLogitProvider(
-        model_id=variant.model.model_id,
+        model_id=model_id,
         device=device,
         weight_dtype=str(backend["weight_dtype"]),
         bit_width=quant.bit_width,

@@ -10,6 +10,16 @@ quant:
   method: torchao-qat-lora   # QATConfig(base=IntxWeightOnlyConfig(...), prepare/convert) + LoRA
   bit_width: 3
   group_size: 32
+qat:                         # next-token loss on general web text; no MCQ data, so calibration
+  corpus: fineweb_edu        # change is attributable to adapting to 3-bit weights
+  train_tokens: 10000000
+  seq_len: 1024
+  micro_batch_size: 4
+  grad_accum: 4              # 16 sequences, 16,384 tokens per optimiser step
+  learning_rate: 1.0e-4
+  warmup_fraction: 0.03
+  lora_rank: 16              # every linear projection; frozen fake-quantised base
+  lora_alpha: 32
 eval:
   seeds: [0, 1, 2]           # training randomness enters here, so >=3 seeds
 # The one QAT variant. Teacher (3B) cannot take full-parameter QAT in 16GB, so this

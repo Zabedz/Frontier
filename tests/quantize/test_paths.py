@@ -75,10 +75,21 @@ def test_checkpoint_path_raises_for_hf_backend() -> None:
         checkpoint_path(variant, backend, root=ROOT)
 
 
-def test_checkpoint_path_raises_for_torchao_backend() -> None:
+def test_checkpoint_path_raises_for_torchao_ptq() -> None:
     variant, backend = _resolve("ptq-3bit-torchao")
     with pytest.raises(ValueError, match="no produced checkpoint"):
         checkpoint_path(variant, backend, root=ROOT)
+
+
+def test_qat_paths_encode_the_recipe_and_suffix_later_seeds() -> None:
+    lora, lora_backend = _resolve("qat-3bit-lora")
+    full, full_backend = _resolve("student-qat-3bit-full")
+    assert checkpoint_path(lora, lora_backend, root=ROOT) == (
+        ROOT / "torchao_qat" / "Qwen2.5-3B-Instruct" / "lora16-int3-g32-fineweb_edu-10000000t"
+    )
+    assert checkpoint_path(full, full_backend, root=ROOT, seed=2).name == (
+        "full-int3-g32-fineweb_edu-10000000t-s2"
+    )
 
 
 def test_checkpoint_path_raises_for_vllm_without_quant() -> None:

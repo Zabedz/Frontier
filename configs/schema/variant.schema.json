@@ -111,6 +111,62 @@
         }
       }
     },
+    "qat": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "corpus",
+        "train_tokens",
+        "seq_len",
+        "micro_batch_size",
+        "grad_accum",
+        "learning_rate",
+        "warmup_fraction"
+      ],
+      "properties": {
+        "corpus": {
+          "enum": [
+            "fineweb_edu"
+          ]
+        },
+        "train_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "seq_len": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "micro_batch_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "grad_accum": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "learning_rate": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "warmup_fraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "lora_rank": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lora_alpha": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
     "distill": {
       "type": [
         "object",

@@ -8,20 +8,20 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from frontier.pipeline.cli import _parse_mode, app
+from frontier.pipeline.cli import app, parse_mode
 
 CONFIG_ROOT = Path(__file__).resolve().parents[2] / "configs"
 FP16 = CONFIG_ROOT / "variants" / "fp16.yaml"
 
 
-def test_parse_mode_accepts_the_two_modes() -> None:
-    assert _parse_mode("smoke") == "smoke"
-    assert _parse_mode("full") == "full"
+def testparse_mode_accepts_the_two_modes() -> None:
+    assert parse_mode("smoke") == "smoke"
+    assert parse_mode("full") == "full"
 
 
-def test_parse_mode_rejects_other_values() -> None:
+def testparse_mode_rejects_other_values() -> None:
     with pytest.raises(typer.BadParameter):
-        _parse_mode("turbo")
+        parse_mode("turbo")
 
 
 def test_cli_rejects_bad_mode_before_loading() -> None:

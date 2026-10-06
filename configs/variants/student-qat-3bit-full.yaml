@@ -12,6 +12,14 @@ quant:
   method: torchao-qat-full   # full-parameter QAT (fits 16GB only at 0.5B)
   bit_width: 3
   group_size: 32
+qat:                         # same corpus, budget, and schedule as qat-3bit-lora
+  corpus: fineweb_edu
+  train_tokens: 10000000
+  seq_len: 1024
+  micro_batch_size: 4
+  grad_accum: 4
+  learning_rate: 1.0e-5      # full-parameter, so an order below the LoRA rate
+  warmup_fraction: 0.03
 eval:
   seeds: [0, 1, 2]           # training randomness enters here, so >=3 seeds
 # The sharpest single calibration data point: genuine full-parameter QAT (not a

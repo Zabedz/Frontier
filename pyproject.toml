@@ -49,6 +49,7 @@ hf = [
     "accelerate>=0.34",
     "bitsandbytes>=0.43 ; sys_platform == 'linux'",  # NF4 / LLM.int8 (Track A); linux-only wheel
     "torchao>=0.16,<0.17",  # 3-bit PTQ and QAT (Track A); the release paired with torch 2.10
+    "peft>=0.21",  # LoRA for QAT on the 3B
 ]
 
 # The Track-B serving/quantise stack (vllm, llmcompressor, compressed-tensors,

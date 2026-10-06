@@ -97,10 +97,14 @@ def test_full_llama_cpp_serves_the_gguf() -> None:
 
 
 @pytest.mark.parametrize("name", ["qat-3bit-lora", "student-qat-3bit-full"])
-def test_torchao_qat_waits_for_a_trained_checkpoint(name: str) -> None:
+def test_torchao_qat_serves_each_seeds_trained_checkpoint(name: str) -> None:
     variant, backend = _resolve(name)
-    with pytest.raises(NotImplementedError, match="trained checkpoint"):
-        build_provider(variant, backend, device="cuda", mode="full", checkpoints_root=CHECKPOINTS)
+    provider = build_provider(
+        variant, backend, device="cuda", mode="full", checkpoints_root=CHECKPOINTS, seed=2
+    )
+    assert isinstance(provider, TorchaoLogitProvider)
+    assert provider.model_id == str(checkpoint_path(variant, backend, root=CHECKPOINTS, seed=2))
+    assert (provider.bit_width, provider.group_size) == (3, 32)
 
 
 def test_latency_probe_maps_backends() -> None:

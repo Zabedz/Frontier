@@ -12,6 +12,7 @@ from typing import Literal
 Family = Literal["baseline", "ptq", "qat", "distill"]
 Track = Literal["A", "B"]
 CalibrationCorpus = Literal["none", "in_domain", "ood"]
+TrainingCorpus = Literal["fineweb_edu"]
 PromptStyle = Literal["zeroshot", "fiveshot"]
 Scoring = Literal["letter_softmax", "acc_norm"]
 PermutationScheme = Literal["none", "cyclic"]
@@ -195,6 +196,25 @@ class QuantSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class QATSpec:
+    """One QAT run's training recipe; the quantisation itself lives in ``QuantSpec``.
+
+    ``lora_rank`` 0 trains every parameter. A step consumes ``micro_batch_size *
+    grad_accum`` packed sequences of ``seq_len`` tokens.
+    """
+
+    corpus: TrainingCorpus
+    train_tokens: int
+    seq_len: int
+    micro_batch_size: int
+    grad_accum: int
+    learning_rate: float
+    warmup_fraction: float
+    lora_rank: int = 0
+    lora_alpha: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class DistillSpec:
     mode: Literal["hard_label", "soft_label_topk"]
     top_k: int = 64
@@ -233,4 +253,5 @@ class VariantConfig:
     eval: EvalSpec
     latency: LatencySpec = field(default_factory=LatencySpec)
     quant: QuantSpec | None = None
+    qat: QATSpec | None = None
     distill: DistillSpec | None = None

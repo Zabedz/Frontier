@@ -85,7 +85,7 @@ def run(
     rows = run_pipeline(
         config,
         eval_profile=eval_profile,
-        mode=_parse_mode(mode),
+        mode=parse_mode(mode),
         config_root=config_root,
         results_root=results,
         checkpoints_root=checkpoints,
@@ -482,7 +482,8 @@ def _reference_map(references: Path | None) -> dict[str, str]:
     return load_references(path)
 
 
-def _parse_mode(value: str) -> RunMode:
+def parse_mode(value: str) -> RunMode:
+    """The ``--mode`` value as a ``RunMode``; shared with ``frontier-quantize``."""
     if value == "smoke":
         return "smoke"
     if value == "full":
