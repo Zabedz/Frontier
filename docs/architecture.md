@@ -43,7 +43,7 @@ config (YAML)  ->  pipeline  ->  result row (parquet/jsonl, append-only)
 | `schema.py` | typed contracts: `VariantConfig` and `ResultRow` (+ nested `Provenance`, `Backend`, `TaskSpec`, `Quality`, `Latency`, `Memory`, `MachineState`). Frozen dataclasses, no behaviour |
 | `metrics/` | calibration (ECE variants, Brier + decomposition, reliability), bootstrap CIs, perplexity. Pure CPU. Heaviest test coverage |
 | `eval/` | task loaders, prompt building, confidence extraction, correctness |
-| `backends/` | inference backends satisfying the eval logit seam (HF Track-A now; vLLM, llama.cpp, torchao later). Model loading lives here |
+| `backends/` | inference backends satisfying the eval logit seam (HF and torchao for Track A, vLLM and llama.cpp for Track B). Model loading lives here |
 | `quantize/` | PTQ producers (llm-compressor GPTQ/AWQ, bnb, torchao, GGUF) and QAT |
 | `distill/` | offline teacher top-k cache plus student training (KD losses) |
 | `latency/` | TTFT / inter-token timing, memory and machine-state capture |

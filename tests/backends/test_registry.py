@@ -12,12 +12,13 @@ import pytest
 from frontier.backends.hf import HFLogitProvider
 from frontier.backends.llama_cpp import LlamaCppLogitProvider
 from frontier.backends.registry import build_latency_probe, build_provider
+from frontier.backends.torchao import TorchaoLogitProvider
 from frontier.backends.vllm import VllmLogitProvider
 from frontier.latency.native import NativeLlamaCppLatency, NativeVllmLatency
 from frontier.latency.rig import default_latency
 from frontier.pipeline.config import resolve_config
 from frontier.quantize.paths import checkpoint_path
-from frontier.schema import VariantConfig
+from frontier.schema import RunMode, VariantConfig
 
 CONFIG_ROOT = Path(__file__).resolve().parents[2] / "configs"
 CHECKPOINTS = Path("/workspace/checkpoints")
@@ -29,15 +30,24 @@ def _resolve(name: str) -> tuple[VariantConfig, dict[str, object]]:
     return resolved.variant, dict(resolved.backend)
 
 
-@pytest.mark.parametrize(
-    "name", ["fp16", "int4-nf4", "int4-gptq", "gguf-q4_k_m", "ptq-3bit-torchao"]
-)
-def test_smoke_returns_hf_for_every_backend(name: str) -> None:
+@pytest.mark.parametrize("name", ["fp16", "int4-nf4", "int4-gptq", "gguf-q4_k_m"])
+def test_smoke_returns_hf_for_every_gpu_only_backend(name: str) -> None:
     variant, backend = _resolve(name)
     provider = build_provider(
         variant, backend, device="cpu", mode="smoke", checkpoints_root=CHECKPOINTS
     )
-    assert isinstance(provider, HFLogitProvider)
+    assert type(provider) is HFLogitProvider
+
+
+@pytest.mark.parametrize("mode", ["smoke", "full"])
+def test_torchao_ptq_quantises_on_load_in_every_mode(mode: RunMode) -> None:
+    variant, backend = _resolve("ptq-3bit-torchao")
+    provider = build_provider(
+        variant, backend, device="cpu", mode=mode, checkpoints_root=CHECKPOINTS
+    )
+    assert isinstance(provider, TorchaoLogitProvider)
+    assert (provider.bit_width, provider.group_size) == (3, 32)
+    assert provider.model_id == QWEN
 
 
 def test_full_hf_backend_is_hf_provider() -> None:
@@ -86,9 +96,10 @@ def test_full_llama_cpp_serves_the_gguf() -> None:
     assert provider.gguf_path == checkpoint_path(variant, backend, root=CHECKPOINTS)
 
 
-def test_full_torchao_raises_not_implemented() -> None:
-    variant, backend = _resolve("ptq-3bit-torchao")
-    with pytest.raises(NotImplementedError, match="torchao"):
+@pytest.mark.parametrize("name", ["qat-3bit-lora", "student-qat-3bit-full"])
+def test_torchao_qat_waits_for_a_trained_checkpoint(name: str) -> None:
+    variant, backend = _resolve(name)
+    with pytest.raises(NotImplementedError, match="trained checkpoint"):
         build_provider(variant, backend, device="cuda", mode="full", checkpoints_root=CHECKPOINTS)
 
 
@@ -100,3 +111,5 @@ def test_latency_probe_maps_backends() -> None:
     assert isinstance(build_latency_probe(vllm_backend, mode="full"), NativeVllmLatency)
     assert isinstance(build_latency_probe(gguf_backend, mode="full"), NativeLlamaCppLatency)
     assert build_latency_probe(vllm_backend, mode="smoke") is default_latency
+    _, torchao_backend = _resolve("ptq-3bit-torchao")
+    assert build_latency_probe(torchao_backend, mode="full") is default_latency

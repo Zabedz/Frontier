@@ -141,15 +141,24 @@ class HFLogitProvider:
         if self.device != "cpu" and is_bnb_dtype(self.weight_dtype):
             model = self._load_bnb(transformers, torch)  # pragma: no cover
         else:
-            torch_dtype = getattr(torch, resolve_dtype(self.device, self.weight_dtype))
+            torch_dtype = getattr(torch, self._compute_dtype_name())
             model = transformers.AutoModelForCausalLM.from_pretrained(
                 self.model_id, revision=self.revision, dtype=torch_dtype
             )
             model.to(self.device)
+            model = self._prepare(model)
         model.eval()
         self._tokenizer = tokenizer
         self._model = model
         self._backend_version = transformers.__version__
+
+    def _compute_dtype_name(self) -> str:
+        """The torch dtype name the model loads and runs in."""
+        return resolve_dtype(self.device, self.weight_dtype)
+
+    def _prepare(self, model: Any) -> Any:
+        """Transform the loaded model before eval; a subclass quantises here."""
+        return model
 
     def _load_bnb(self, transformers: Any, torch: Any) -> Any:  # pragma: no cover
         """Load the model quantised through bitsandbytes on the CUDA path.
