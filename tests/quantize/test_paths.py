@@ -47,6 +47,21 @@ def test_ood_variant_lands_beside_in_domain_without_collision() -> None:
     assert ood_path.name == "gptq-ood-512s-g128"
 
 
+def test_seed_zero_keeps_the_banked_path_and_other_seeds_land_beside_it() -> None:
+    variant, backend = _resolve("int4-gptq")
+    banked = checkpoint_path(variant, backend, root=ROOT)
+    assert checkpoint_path(variant, backend, root=ROOT, seed=0) == banked
+    seeded = checkpoint_path(variant, backend, root=ROOT, seed=2)
+    assert seeded == banked.parent / "gptq-in_domain-512s-g128-s2"
+
+
+def test_a_data_free_checkpoint_is_shared_by_every_seed() -> None:
+    variant, backend = _resolve("gguf-q4_k_m")
+    assert checkpoint_path(variant, backend, root=ROOT, seed=3) == checkpoint_path(
+        variant, backend, root=ROOT
+    )
+
+
 def test_gguf_path_is_single_file_named_by_dtype() -> None:
     variant, backend = _resolve("gguf-q4_k_m")
     assert checkpoint_path(variant, backend, root=ROOT) == (

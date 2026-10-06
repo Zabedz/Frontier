@@ -11,10 +11,15 @@ from pathlib import Path
 import pytest
 
 from frontier.pipeline.config import resolve_config
-from frontier.quantize.compressed_tensors import _is_complete, produce_compressed_tensors
+from frontier.quantize.compressed_tensors import (
+    _is_complete,
+    calibration_draw_seed,
+    produce_compressed_tensors,
+)
 from frontier.quantize.paths import checkpoint_path
 
 CONFIG_ROOT = Path(__file__).resolve().parents[2] / "configs"
+CALIBRATION_SEED = 620
 
 
 def _complete_checkpoint(root: Path) -> Path:
@@ -42,6 +47,24 @@ def test_producer_returns_early_for_a_complete_checkpoint(tmp_path: Path) -> Non
         resolved.variant, resolved.backend, checkpoints_root=tmp_path
     )
     assert result == out
+
+
+def test_producer_returns_each_seed_its_own_checkpoint(tmp_path: Path) -> None:
+    resolved = resolve_config(CONFIG_ROOT / "variants" / "int4-gptq.yaml", config_root=CONFIG_ROOT)
+    out = _complete_checkpoint(
+        checkpoint_path(resolved.variant, resolved.backend, root=tmp_path, seed=1)
+    )
+    result = produce_compressed_tensors(
+        resolved.variant, resolved.backend, checkpoints_root=tmp_path, seed=1
+    )
+    assert result == out
+    assert result != checkpoint_path(resolved.variant, resolved.backend, root=tmp_path)
+
+
+def test_seed_zero_draws_with_the_config_seed() -> None:
+    assert calibration_draw_seed(CALIBRATION_SEED, 0) == CALIBRATION_SEED
+    draws = [calibration_draw_seed(CALIBRATION_SEED, seed) for seed in (1, 2)]
+    assert draws == [CALIBRATION_SEED + 1, CALIBRATION_SEED + 2]
 
 
 def test_producer_rejects_a_variant_without_quant(tmp_path: Path) -> None:

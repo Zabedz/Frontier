@@ -1,5 +1,6 @@
 """The ``frontier-quantize`` command: write a variant's compressed-tensors (vLLM) or GGUF
 (llama.cpp) checkpoint at ``checkpoint_path``, idempotently, for ``frontier run`` to serve.
+One checkpoint per seed of the eval profile, so both commands read their seeds from one place.
 
 A pod command: the compressed-tensors producer runs a GPU calibration pass and the GGUF
 producer shells out to llama.cpp, so the body is exercised on the pod.
@@ -40,26 +41,35 @@ def run(
     checkpoints: Annotated[
         Path, typer.Option("--checkpoints", help="Checkpoint root (pod volume).")
     ] = Path("checkpoints"),
+    eval_profile: Annotated[
+        str | None,
+        typer.Option("--eval", help="Eval profile whose seeds to produce (default: base's)."),
+    ] = None,
     config_root: Annotated[Path, typer.Option("--config-root", help="Config root.")] = Path(
         "configs"
     ),
 ) -> None:
-    """Resolve the config and produce its checkpoint for the config's backend.
+    """Resolve the config and produce one checkpoint per seed for the config's backend.
 
-    The calibration draw comes from ``quant.calibration_seed``, so it is covered by the
-    config hash and reproducible from the config alone.
+    Seed ``s`` calibrates on the draw ``quant.calibration_seed + s``, so every checkpoint is
+    reproducible from the config. Pass the same ``--eval`` as the ``frontier run`` that
+    serves them.
     """
-    resolved = resolve_config(config, config_root=config_root)
-    out = _produce(resolved.variant, resolved.backend, checkpoints)
-    _console.print(
-        f"[green]checkpoint ready[/green] for [bold]{resolved.variant.name}[/bold]: {out}"
-    )
+    resolved = resolve_config(config, eval_profile=eval_profile, config_root=config_root)
+    for seed in resolved.eval_spec.seeds:
+        out = _produce(resolved.variant, resolved.backend, checkpoints, seed=seed)
+        _console.print(
+            f"[green]checkpoint ready[/green] for [bold]{resolved.variant.name}[/bold] "
+            f"seed {seed}: {out}"
+        )
 
 
-def _produce(variant: VariantConfig, backend: Mapping[str, Any], checkpoints: Path) -> Path:
+def _produce(
+    variant: VariantConfig, backend: Mapping[str, Any], checkpoints: Path, *, seed: int
+) -> Path:
     inference_backend = backend["inference_backend"]
     if inference_backend == "vllm":
-        return produce_compressed_tensors(variant, backend, checkpoints_root=checkpoints)
+        return produce_compressed_tensors(variant, backend, checkpoints_root=checkpoints, seed=seed)
     if inference_backend == "llama_cpp":
         return produce_gguf(
             variant,

@@ -162,9 +162,9 @@ def calibration_set_table(
 ) -> tuple[list[CorpusShift], list[ShiftContrast], list[Skipped]]:
     """Every twin pair and the contrast, on each task separately.
 
-    A variant with no row, a missing sidecar, or rows under two config hashes is skipped
-    with that reason. Twins whose sidecars describe different items raise, since the axis
-    holds everything but the corpus fixed.
+    A variant with no row, a missing sidecar, rows under two config hashes, or several
+    seeds is skipped with that reason. Twins whose sidecars describe different items raise,
+    since the axis holds everything but the corpus fixed.
     """
     shifts: list[CorpusShift] = []
     contrasts: list[ShiftContrast] = []
@@ -263,6 +263,18 @@ class _TaskRows:
         if name not in self._present:
             self._skipped.append(
                 Skipped(owner, self._task, f"{name} has no row on task {self._task}")
+            )
+            return None
+        seeds = set(
+            self._tidy.loc[
+                (self._tidy["task_name"] == self._task) & (self._tidy["variant_name"] == name),
+                "seed",
+            ]
+        )
+        if len(seeds) > 1:
+            # The pooled loader would concatenate the seeds' checkpoints into one sample.
+            self._skipped.append(
+                Skipped(owner, self._task, f"{name} has {len(seeds)} seeds; one is supported")
             )
             return None
         try:

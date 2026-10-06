@@ -28,14 +28,15 @@ def produce_compressed_tensors(
     backend: Mapping[str, Any],
     *,
     checkpoints_root: Path,
+    seed: int = 0,
 ) -> Path:
-    """Quantise ``variant`` with llm-compressor and write a compressed-tensors checkpoint.
+    """Quantise ``variant`` with llm-compressor and write the checkpoint for ``seed``.
 
     Idempotent: returns early when the checkpoint already carries a ``config.json`` and a
-    ``recipe.yaml``. The calibration seed comes from the config, so the draw is covered by
-    the config hash and two checkpoints built from different draws stay distinguishable in
-    the store. Raises ``ValueError`` for a variant with no ``quant`` block, or one that
-    calibrates with no ``calibration_seed``.
+    ``recipe.yaml``. Seed ``s`` draws the calibration samples with ``calibration_seed + s``,
+    so seed 0 is the config's own draw and each seed is reproducible from the config. Raises
+    ``ValueError`` for a variant with no ``quant`` block, or one that calibrates with no
+    ``calibration_seed``.
     """
     if variant.quant is None:
         raise ValueError(f"variant {variant.name!r} has no quant block to compress")
@@ -44,17 +45,22 @@ def produce_compressed_tensors(
             f"variant {variant.name!r} calibrates on the {variant.quant.calibration_corpus!r} "
             f"corpus but sets no calibration_seed; the draw would go unrecorded"
         )
-    out = checkpoint_path(variant, backend, root=checkpoints_root)
+    out = checkpoint_path(variant, backend, root=checkpoints_root, seed=seed)
     if _is_complete(out):
         return out
-    return _run_oneshot(variant, out)  # pragma: no cover
+    return _run_oneshot(variant, out, seed=seed)  # pragma: no cover
+
+
+def calibration_draw_seed(calibration_seed: int, seed: int) -> int:
+    """The shuffle seed for run ``seed``'s calibration draw; seed 0 keeps the config's."""
+    return calibration_seed + seed
 
 
 def _is_complete(out: Path) -> bool:
     return out.is_dir() and all((out / marker).exists() for marker in _COMPLETION_MARKERS)
 
 
-def _run_oneshot(variant: VariantConfig, out: Path) -> Path:  # pragma: no cover
+def _run_oneshot(variant: VariantConfig, out: Path, *, seed: int) -> Path:  # pragma: no cover
     from llmcompressor import oneshot  # noqa: PLC0415
     from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: PLC0415
 
@@ -70,7 +76,7 @@ def _run_oneshot(variant: VariantConfig, out: Path) -> Path:  # pragma: no cover
         tokenizer,
         num_samples=variant.quant.calibration_samples,
         max_seq_length=CALIB_SEQ_LEN,
-        seed=variant.quant.calibration_seed,
+        seed=calibration_draw_seed(variant.quant.calibration_seed, seed),
     )
     oneshot(
         model=model,

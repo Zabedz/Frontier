@@ -1,0 +1,13 @@
+# Full MMLU over three calibration draws: seed s quantises on calibration_seed + s, so a PTQ
+# arm's interval covers checkpoint-to-checkpoint spread. Quantise and run with this profile.
+# Rows go to their own store; the reference runs under full-mmlu, since it has one seed.
+eval:
+  task_name: mmlu
+  split: test
+  subset_size: null
+  prompt_style: zeroshot
+  scoring: letter_softmax
+  permutation_scheme: cyclic
+  labels: raw
+  cot: false
+  seeds: [0, 1, 2]

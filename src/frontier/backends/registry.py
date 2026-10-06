@@ -45,7 +45,7 @@ def build_provider(
         )
     if inference_backend == "vllm":
         model = (
-            str(checkpoint_path(variant, backend, root=checkpoints_root))
+            str(checkpoint_path(variant, backend, root=checkpoints_root, seed=seed))
             if variant.quant is not None
             else variant.model.model_id
         )

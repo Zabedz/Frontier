@@ -125,6 +125,37 @@ def test_a_missing_twin_is_skipped_with_its_reason(tmp_path: Path) -> None:
     assert any("int4-awq has no row" in skip.reason for skip in skipped)
 
 
+def test_a_multi_seed_twin_is_skipped_rather_than_pooled(tmp_path: Path) -> None:
+    _seed(tmp_path, CONFIDENCE_SHIFT)
+    store = ResultStore(tmp_path)
+    gptq_hash = "0" * 64
+    row = sample_row()
+    append_row(
+        replace(
+            row,
+            variant_name="int4-gptq",
+            provenance=replace(row.provenance, config_hash=gptq_hash, seed=1),
+        ),
+        store,
+    )
+    write_predictions_rows(
+        PredictionRows(
+            confidence=np.full(N_ITEMS, 0.7),
+            correct=np.ones(N_ITEMS, dtype=bool),
+            gold=np.zeros(N_ITEMS, dtype=np.intp),
+            predicted=np.zeros(N_ITEMS, dtype=np.intp),
+            options=None,
+            qid=np.asarray([f"q{item}" for item in range(N_ITEMS)], dtype=np.str_),
+        ),
+        root=tmp_path,
+        key=predictions_key(gptq_hash, 1, "mmlu"),
+    )
+    shifts, contrasts, skipped = _table(tmp_path)
+    assert [shift.variant for shift in shifts] == ["int4-awq-ood"]
+    assert contrasts == []
+    assert any("int4-gptq has 2 seeds" in skip.reason for skip in skipped)
+
+
 def test_twins_over_different_items_raise(tmp_path: Path) -> None:
     _seed(tmp_path, CONFIDENCE_SHIFT, qid_prefix={"int4-gptq-ood": "other"})
     with pytest.raises(ValueError, match="cannot pair int4-gptq-ood with int4-gptq"):

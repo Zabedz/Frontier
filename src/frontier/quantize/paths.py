@@ -3,7 +3,7 @@
 The producers write to exactly the path :func:`checkpoint_path` returns and
 ``build_provider`` reads from it, so producing and serving agree. The path encodes the
 calibration corpus and sample count, so an out-of-domain checkpoint lands beside the
-in-domain one without a collision.
+in-domain one without a collision, and a seed's calibration draw lands beside seed 0's.
 """
 
 from __future__ import annotations
@@ -34,11 +34,15 @@ def gguf_quant_type(weight_dtype: str) -> str:
         ) from None
 
 
-def checkpoint_path(variant: VariantConfig, backend: Mapping[str, Any], *, root: Path) -> Path:
-    """Where a variant's produced checkpoint lives, deterministically.
+def checkpoint_path(
+    variant: VariantConfig, backend: Mapping[str, Any], *, root: Path, seed: int = 0
+) -> Path:
+    """Where a variant's produced checkpoint for ``seed`` lives, deterministically.
 
-    vLLM lands at ``root/compressed_tensors/<slug>/<kind>-<corpus>-<samples>s-g<group>``
-    and llama.cpp at ``root/gguf/<slug>.<weight_dtype>.gguf``. Raises ``ValueError`` for
+    vLLM lands at ``root/compressed_tensors/<slug>/<kind>-<corpus>-<samples>s-g<group>``,
+    with ``-s<seed>`` appended for a calibrating variant's non-zero seed, and llama.cpp at
+    ``root/gguf/<slug>.<weight_dtype>.gguf``. A data-free checkpoint is the same for every
+    seed, so its path ignores the seed. Raises ``ValueError`` for
     ``hf`` and ``torchao``, which quantise the base model in-process and produce no
     checkpoint, and for a vLLM variant with no ``quant`` block, which is the FP16 gate
     serving the base model directly.
@@ -56,6 +60,8 @@ def checkpoint_path(variant: VariantConfig, backend: Mapping[str, Any], *, root:
             f"{recipe.kind}-{variant.quant.calibration_corpus}-"
             f"{variant.quant.calibration_samples}s-g{variant.quant.group_size}"
         )
+        if seed != 0 and variant.quant.calibration_corpus != "none":
+            name = f"{name}-s{seed}"
         return root / "compressed_tensors" / slug / name
     if inference_backend == "llama_cpp":
         return root / "gguf" / f"{slug}.{backend['weight_dtype']}.gguf"

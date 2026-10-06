@@ -58,6 +58,16 @@ def test_full_vllm_quant_serves_the_checkpoint() -> None:
     assert provider.model == str(checkpoint_path(variant, backend, root=CHECKPOINTS))
 
 
+def test_full_vllm_quant_serves_each_seeds_checkpoint() -> None:
+    variant, backend = _resolve("int4-gptq")
+    provider = build_provider(
+        variant, backend, device="cuda", mode="full", checkpoints_root=CHECKPOINTS, seed=2
+    )
+    assert isinstance(provider, VllmLogitProvider)
+    assert provider.model == str(checkpoint_path(variant, backend, root=CHECKPOINTS, seed=2))
+    assert provider.model.endswith("-s2")
+
+
 def test_full_vllm_fp16_gate_serves_the_base_model() -> None:
     variant, backend = _resolve("fp16-vllm")
     provider = build_provider(
