@@ -454,6 +454,14 @@ def test_to_frame_column_contract_is_stable() -> None:
         "delta_ece",
         "delta_ece_low",
         "delta_ece_high",
+        "excess_damage",
+        "excess_damage_low",
+        "excess_damage_high",
+        "calibration_damaged",
+        "delta_auroc",
+        "delta_auroc_low",
+        "delta_auroc_high",
+        "discrimination_moved",
         "damage_gap",
         "damage_gap_low",
         "damage_gap_high",
@@ -469,6 +477,7 @@ def test_to_frame_column_contract_is_stable() -> None:
         "delta_ece_sweep",
         "n_seeds",
         "seed_spread",
+        "across_seeds",
     }
     low, point, high = json.loads(str(frame["delta_ece_sweep"].iloc[0]))["10"]
     assert (low, point, high) == (
@@ -551,8 +560,27 @@ def test_seeded_pair_reports_the_seed_count_and_each_quantity_spread() -> None:
         "delta_accuracy",
         "delta_confidence",
         "delta_ece",
+        "excess_damage",
+        "delta_auroc",
         "damage_gap",
     }
+    assert set(outcome.across_seeds) == {
+        "delta_accuracy",
+        "delta_confidence",
+        "delta_ece",
+        "excess_damage",
+        "delta_auroc",
+    }
+    assert outcome.verdict_interval("excess_damage") is outcome.across_seeds["excess_damage"]
+
+
+def test_one_seed_verdicts_read_the_question_only_intervals() -> None:
+    gold = _gold()
+    reference = _predictions(gold, seed=1)
+    outcome = pair_significance(_pair(), reference, _worse_than(reference), n_resamples=RESAMPLES)
+    assert outcome.across_seeds == {}
+    assert outcome.verdict_interval("excess_damage") is outcome.excess_damage
+    assert outcome.verdict_interval("delta_auroc") is outcome.delta_auroc
 
 
 def test_seeded_pair_refuses_a_seed_copy_over_other_items() -> None:

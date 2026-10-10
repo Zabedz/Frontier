@@ -27,6 +27,7 @@ from frontier.metrics.calibration import (
     ece_from_confidence,
     top_label,
 )
+from frontier.metrics.discrimination import auroc
 from frontier.metrics.recalibration import (
     TemperatureFitError,
     apply_temperature,
@@ -42,6 +43,8 @@ SeededQuantity = Literal[
     "delta_accuracy",
     "delta_confidence",
     "delta_ece",
+    "excess_damage",
+    "delta_auroc",
     "damage_gap",
     "accuracy_damage",
     "damage_ratio",
@@ -382,9 +385,10 @@ def paired_damage_gap_ci(
 ) -> ConfidenceInterval:
     """Percentile bootstrap interval on the damage gap, calibration minus accuracy.
 
-    An interval wholly above zero is the direction claim, that compression costs more
-    calibration than accuracy in relative terms. Being a difference of two fractions, the
-    gap stays estimable where the accuracy damage is near zero and the ratio is not. Both
+    Both damages are relative, and ECE sits well below accuracy, so a pure accuracy loss at
+    unchanged confidence already gives a positive gap: when every bin is overconfident, ECE
+    rises by exactly the accuracy lost. An interval above zero is therefore no evidence of
+    calibration damage on its own; ``excess_damage`` is the statistic with a zero null. Both
     damages are recomputed inside every resample, reference values included.
     """
 
@@ -422,7 +426,8 @@ def paired_damage_ratio_ci(
 ) -> RatioInterval:
     """Percentile bootstrap on the damage ratio, calibration loss over accuracy loss.
 
-    The ratio is the magnitude behind "ECE degrades twice as fast". Its denominator is
+    At unchanged confidence on a model overconfident in every bin, the ratio is reference
+    accuracy over reference ECE, not 1; compare it against that value. Its denominator is
     bootstrapped alongside it, because a ratio whose denominator interval spans zero has no
     meaningful quantiles however tight they look. Read ``RatioInterval.usable`` before
     quoting the interval.
@@ -608,40 +613,51 @@ def seeded_quantity(
 ) -> float:
     """One paired quantity with the variant side averaged over its seed copies.
 
-    Each seed copy is scored on its own and its accuracy, ECE, and mean confidence are
+    Each seed copy is scored on its own and its accuracy, ECE, mean confidence, and AUROC are
     averaged, so every ECE carries the same finite-sample floor as the reference's. Pooling
     the copies into one sample would lower the variant's floor and flatter its calibration.
-    The damages follow ``relative_damages``: ``nan`` where a reference value is zero.
+
+    ``excess_damage`` is the ECE rise beyond the accuracy loss, ``delta_ece +
+    delta_accuracy``: zero when ECE moves only because answers flipped, and equal to
+    ``delta_confidence`` when every bin is overconfident (ECE is then mean confidence minus
+    accuracy). The damages follow ``relative_damages``: ``nan`` where a reference value is
+    zero.
     """
     ref_confidence, ref_correct = reference
+    if quantity == "delta_confidence":
+        return _seed_mean([float(np.mean(conf)) for conf, _corr in seeds]) - float(
+            np.mean(ref_confidence)
+        )
+    if quantity == "delta_auroc":
+        return _seed_mean([auroc(conf, corr) for conf, corr in seeds]) - auroc(
+            ref_confidence, ref_correct
+        )
+    accuracy_ref = float(np.mean(ref_correct))
+    accuracy_var = _seed_mean([float(np.mean(corr)) for _conf, corr in seeds])
     ece_ref = ece_from_confidence(
         ref_confidence, ref_correct, n_bins=n_bins, scheme=scheme, weighting=weighting
     )
-    accuracy_ref = float(np.mean(ref_correct))
     ece_var = _seed_mean(
         [
             ece_from_confidence(conf, corr, n_bins=n_bins, scheme=scheme, weighting=weighting)
             for conf, corr in seeds
         ]
     )
-    accuracy_var = _seed_mean([float(np.mean(corr)) for _conf, corr in seeds])
-    if quantity == "delta_accuracy":
-        return accuracy_var - accuracy_ref
-    if quantity == "delta_confidence":
-        return _seed_mean([float(np.mean(conf)) for conf, _corr in seeds]) - float(
-            np.mean(ref_confidence)
-        )
-    if quantity == "delta_ece":
-        return ece_var - ece_ref
     calibration_damage = math.nan if ece_ref == 0.0 else (ece_var - ece_ref) / ece_ref
     accuracy_damage = (
         math.nan if accuracy_ref == 0.0 else (accuracy_ref - accuracy_var) / accuracy_ref
     )
-    if quantity == "accuracy_damage":
-        return accuracy_damage
-    if quantity == "damage_gap":
-        return calibration_damage - accuracy_damage
-    return math.nan if accuracy_damage == 0.0 else calibration_damage / accuracy_damage
+    values = {
+        "delta_accuracy": accuracy_var - accuracy_ref,
+        "delta_ece": ece_var - ece_ref,
+        "excess_damage": (ece_var - ece_ref) + (accuracy_var - accuracy_ref),
+        "accuracy_damage": accuracy_damage,
+        "damage_gap": calibration_damage - accuracy_damage,
+        "damage_ratio": (
+            math.nan if accuracy_damage == 0.0 else calibration_damage / accuracy_damage
+        ),
+    }
+    return values[quantity]
 
 
 def _seeded_arrays(
@@ -696,6 +712,52 @@ def paired_seeded_ci(
         arrays, statistic, confidence_level=confidence_level, n_resamples=n_resamples, rng=rng
     )
     return ConfidenceInterval(point=statistic(*arrays), low=low, high=high)
+
+
+def paired_seeded_hierarchical_ci(
+    reference: tuple[FloatArray, CorrectArray],
+    seeds: Sequence[tuple[FloatArray, CorrectArray]],
+    *,
+    quantity: SeededQuantity,
+    n_bins: int = DEFAULT_BINS,
+    scheme: BinScheme = "equal_width",
+    weighting: Weighting = "mass",
+    confidence_level: float = 0.95,
+    n_resamples: int = DEFAULT_RESAMPLES,
+    rng: np.random.Generator | int | None = None,
+) -> ConfidenceInterval:
+    """``paired_seeded_ci`` that also resamples the seed copies, for a claim about the method.
+
+    Each resample draws the seed copies with replacement and the items with replacement,
+    one index vector shared by the reference and every drawn copy, so the interval carries
+    run-to-run spread as well as question sampling. The question-only interval is
+    conditional on the copies in hand. With few seeds this still understates the run-to-run
+    spread (a bootstrap over ``n`` draws keeps ``(n - 1) / n`` of the variance), so quote
+    the per-seed range beside it.
+    """
+    _seeded_arrays(reference, seeds)
+    generator = _normalise_rng(rng) or np.random.default_rng()
+    ref_confidence, ref_correct = reference
+    n_items = int(ref_correct.shape[0])
+    n_seeds = len(seeds)
+    point = seeded_quantity(
+        quantity, reference, seeds, n_bins=n_bins, scheme=scheme, weighting=weighting
+    )
+    drawn = np.empty(n_resamples, dtype=np.float64)
+    for draw in range(n_resamples):
+        picks = generator.integers(0, n_seeds, size=n_seeds)
+        rows = generator.integers(0, n_items, size=n_items)
+        drawn[draw] = seeded_quantity(
+            quantity,
+            (ref_confidence[rows], ref_correct[rows]),
+            [(seeds[pick][0][rows], seeds[pick][1][rows]) for pick in picks],
+            n_bins=n_bins,
+            scheme=scheme,
+            weighting=weighting,
+        )
+    alpha = (1.0 - confidence_level) / 2.0
+    low, high = np.quantile(drawn, [alpha, 1.0 - alpha])
+    return ConfidenceInterval(point=point, low=float(low), high=float(high))
 
 
 def paired_seeded_ratio_ci(

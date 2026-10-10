@@ -1,4 +1,5 @@
-"""Paired significance over banked rows: whether calibration degrades faster than accuracy.
+"""Paired significance over banked rows: whether compression damages calibration beyond the
+accuracy it costs.
 
 A stored row keeps one single-variant interval, so the paired statistics run on the
 per-item sidecars. A pairing over mismatched items is silent, so ``_check_alignment``
@@ -30,6 +31,7 @@ from frontier.metrics.bootstrap import (
     paired_delta_confidence_ci,
     paired_delta_ece_ci,
     paired_seeded_ci,
+    paired_seeded_hierarchical_ci,
     paired_seeded_ratio_ci,
     seeded_quantity,
 )
@@ -57,17 +59,18 @@ class VariantPair:
 class PairSignificance:
     """Every paired statistic for one variant against its reference.
 
-    ``delta_*``: absolute differences, variant minus reference. ``damage_gap`` and
-    ``damage_ratio`` put the two losses on one relative scale, the gap answering whether
-    calibration degrades faster and the ratio by what multiple. ``delta_ece_sweep``
-    repeats the ECE delta at each sweep bin count plus the headline count, since an ECE
-    delta that changes sign with the bin count supports no claim at a single count.
+    ``delta_*``: absolute differences, variant minus reference. ``excess_damage`` is the
+    verdict statistic: the ECE rise beyond the accuracy lost (see ``seeded_quantity``),
+    zero when ECE moves only because answers flipped. ``delta_auroc`` is the change in how
+    well confidence separates right answers from wrong. ``damage_gap`` and ``damage_ratio``
+    are relative and kept for reference only: ECE sits well below accuracy, so a pure
+    accuracy loss already drives the gap above zero and the ratio to accuracy over ECE.
+    ``delta_ece_sweep`` repeats the ECE delta at each sweep bin count plus the headline
+    count, since an ECE delta that changes sign with the bin count supports no claim.
 
-    ``delta_confidence`` is the control on all of it. A uniformly overconfident model has
-    an ECE that tracks mean confidence minus accuracy, so its ECE delta follows from the
-    accuracy delta alone and the damage ratio settles near accuracy over ECE with nothing
-    said about confidence. Only ``delta_confidence`` distinguishes a model that grew
-    overconfident from one that got more answers wrong.
+    At several seeds, ``across_seeds`` holds the intervals that also resample the seed
+    copies; the verdict properties read those, since the question-only intervals are
+    conditional on the copies in hand.
     """
 
     pair: VariantPair
@@ -76,17 +79,39 @@ class PairSignificance:
     delta_accuracy: ConfidenceInterval
     delta_confidence: ConfidenceInterval
     delta_ece: ConfidenceInterval
+    excess_damage: ConfidenceInterval
+    delta_auroc: ConfidenceInterval
     damage_gap: ConfidenceInterval
     damage_ratio: RatioInterval
     delta_ece_sweep: dict[int, ConfidenceInterval]
     n_seeds: int = 1
     # Per-seed point estimates as (min, max), one entry per quantity; empty at one seed.
     seed_spread: dict[str, tuple[float, float]] = field(default_factory=dict)
+    # Seed-and-question intervals, keyed by quantity; empty at one seed.
+    across_seeds: dict[str, ConfidenceInterval] = field(default_factory=dict)
+
+    def verdict_interval(self, quantity: SeededQuantity) -> ConfidenceInterval:
+        """The interval a claim about the method rests on: across seeds when there are any."""
+        if quantity in self.across_seeds:
+            return self.across_seeds[quantity]
+        interval: ConfidenceInterval = getattr(self, quantity)
+        return interval
 
     @property
     def confidence_shifted(self) -> bool:
         """Whether compression moved what the model says about itself, beyond noise."""
-        return self.delta_confidence.excludes_zero
+        return self.verdict_interval("delta_confidence").excludes_zero
+
+    @property
+    def calibration_damaged(self) -> bool:
+        """Whether ECE rose beyond the accuracy lost, beyond noise."""
+        interval = self.verdict_interval("excess_damage")
+        return interval.excludes_zero and interval.point > 0.0
+
+    @property
+    def discrimination_moved(self) -> bool:
+        """Whether confidence ranks right against wrong answers differently, beyond noise."""
+        return self.verdict_interval("delta_auroc").excludes_zero
 
     @property
     def delta_ece_sign_stable(self) -> bool:
@@ -223,6 +248,20 @@ def pair_significance(
         n_resamples=n_resamples,
         rng=rng,
     )
+    reference = (reference_rows.confidence, reference_rows.correct)
+    variant = [(variant_rows.confidence, variant_rows.correct)]
+    excess_damage, delta_auroc = (
+        paired_seeded_ci(
+            reference,
+            variant,
+            quantity=quantity,
+            n_bins=n_bins,
+            confidence_level=confidence_level,
+            n_resamples=n_resamples,
+            rng=rng,
+        )
+        for quantity in ("excess_damage", "delta_auroc")
+    )
     # The headline count is read out of the sweep, so both share one set of resamples.
     sweep = {
         bins: paired_delta_ece_ci(
@@ -241,6 +280,8 @@ def pair_significance(
         delta_accuracy=delta_accuracy,
         delta_confidence=delta_confidence,
         delta_ece=sweep[n_bins],
+        excess_damage=excess_damage,
+        delta_auroc=delta_auroc,
         damage_gap=damage_gap,
         damage_ratio=damage_ratio,
         delta_ece_sweep=sweep,
@@ -251,7 +292,17 @@ _SPREAD_QUANTITIES: tuple[SeededQuantity, ...] = (
     "delta_accuracy",
     "delta_confidence",
     "delta_ece",
+    "excess_damage",
+    "delta_auroc",
     "damage_gap",
+)
+# The quantities a verdict reads; each gets a seed-and-question interval at several seeds.
+_VERDICT_QUANTITIES: tuple[SeededQuantity, ...] = (
+    "delta_accuracy",
+    "delta_confidence",
+    "delta_ece",
+    "excess_damage",
+    "delta_auroc",
 )
 
 
@@ -266,10 +317,10 @@ def pair_significance_seeded(
     n_resamples: int = DEFAULT_RESAMPLES,
     rng: int | None = 0,
 ) -> PairSignificance:
-    """``pair_significance`` with the variant averaged over its training seeds.
+    """``pair_significance`` with the variant averaged over its seeds.
 
     Every seed copy is checked against the reference's items. ``seed_spread`` carries each
-    quantity's per-seed range, since three seeds are too few to resample over.
+    quantity's per-seed range and ``across_seeds`` the intervals that resample seeds too.
     """
     for rows in seed_rows:
         _check_alignment(pair, reference_rows, rows)
@@ -292,6 +343,18 @@ def pair_significance_seeded(
     for quantity in _SPREAD_QUANTITIES:
         per_seed = [seeded_quantity(quantity, reference, [seed], n_bins=n_bins) for seed in seeds]
         spread[quantity] = (min(per_seed), max(per_seed))
+    across: dict[str, ConfidenceInterval] = {
+        quantity: paired_seeded_hierarchical_ci(
+            reference,
+            seeds,
+            quantity=quantity,
+            n_bins=n_bins,
+            confidence_level=confidence_level,
+            n_resamples=n_resamples,
+            rng=rng,
+        )
+        for quantity in _VERDICT_QUANTITIES
+    }
     return PairSignificance(
         pair=pair,
         n_items=int(reference_rows.gold.shape[0]),
@@ -299,6 +362,8 @@ def pair_significance_seeded(
         delta_accuracy=interval("delta_accuracy"),
         delta_confidence=interval("delta_confidence"),
         delta_ece=sweep[n_bins],
+        excess_damage=interval("excess_damage"),
+        delta_auroc=interval("delta_auroc"),
         damage_gap=interval("damage_gap"),
         damage_ratio=paired_seeded_ratio_ci(
             reference,
@@ -311,6 +376,7 @@ def pair_significance_seeded(
         delta_ece_sweep=sweep,
         n_seeds=len(seeds),
         seed_spread=spread,
+        across_seeds=across,
     )
 
 
@@ -401,6 +467,14 @@ def to_frame(results: Sequence[PairSignificance]) -> pd.DataFrame:
             "delta_ece": item.delta_ece.point,
             "delta_ece_low": item.delta_ece.low,
             "delta_ece_high": item.delta_ece.high,
+            "excess_damage": item.excess_damage.point,
+            "excess_damage_low": item.excess_damage.low,
+            "excess_damage_high": item.excess_damage.high,
+            "calibration_damaged": item.calibration_damaged,
+            "delta_auroc": item.delta_auroc.point,
+            "delta_auroc_low": item.delta_auroc.low,
+            "delta_auroc_high": item.delta_auroc.high,
+            "discrimination_moved": item.discrimination_moved,
             "damage_gap": item.damage_gap.point,
             "damage_gap_low": item.damage_gap.low,
             "damage_gap_high": item.damage_gap.high,
@@ -422,6 +496,12 @@ def to_frame(results: Sequence[PairSignificance]) -> pd.DataFrame:
             "n_seeds": item.n_seeds,
             "seed_spread": json.dumps(
                 {name: list(bounds) for name, bounds in item.seed_spread.items()}
+            ),
+            "across_seeds": json.dumps(
+                {
+                    name: [interval.low, interval.point, interval.high]
+                    for name, interval in item.across_seeds.items()
+                }
             ),
         }
         for item in results

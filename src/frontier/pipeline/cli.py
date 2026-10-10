@@ -15,7 +15,7 @@ from rich.console import Console
 from rich.table import Table
 
 from frontier.io.store import ResultStore
-from frontier.metrics.bootstrap import DEFAULT_RESAMPLES
+from frontier.metrics.bootstrap import DEFAULT_RESAMPLES, ConfidenceInterval
 from frontier.metrics.calibration import DEFAULT_BINS
 from frontier.pipeline.runner import run as run_pipeline
 from frontier.schema import ResultRow, RunMode
@@ -555,10 +555,12 @@ def _summarise_significance(
     for column in (
         "pair",
         "n",
+        "seeds",
         "d accuracy",
         "d confidence",
         "d ECE",
-        "damage gap",
+        "excess damage",
+        "d AUROC",
         "damage ratio",
     ):
         table.add_column(column, overflow="fold")
@@ -569,41 +571,34 @@ def _summarise_significance(
             if ratio.usable
             else f"{ratio.point:+.2f} (not estimable)"
         )
-        table.add_row(
-            item.pair.label,
-            str(item.n_items),
-            _interval(item.delta_accuracy.point, item.delta_accuracy.low, item.delta_accuracy.high),
-            _interval(
-                item.delta_confidence.point,
-                item.delta_confidence.low,
-                item.delta_confidence.high,
-            ),
-            _interval(item.delta_ece.point, item.delta_ece.low, item.delta_ece.high),
-            _interval(item.damage_gap.point, item.damage_gap.low, item.damage_gap.high, places=3),
-            ratio_cell,
-        )
+        cells = [
+            _verdict_cell(item.verdict_interval(quantity))
+            for quantity in (
+                "delta_accuracy",
+                "delta_confidence",
+                "delta_ece",
+                "excess_damage",
+                "delta_auroc",
+            )
+        ]
+        table.add_row(item.pair.label, str(item.n_items), str(item.n_seeds), *cells, ratio_cell)
     _console.print(table)
+    if any(item.n_seeds > 1 for item in found):
+        _console.print(
+            "  intervals for multi-seed variants resample seeds and questions; with few seeds "
+            "they still understate run-to-run spread"
+        )
     for item in found:
+        excess = _verdict_cell(item.verdict_interval("excess_damage"))
         verdict = (
-            "calibration degrades faster than accuracy"
-            if item.damage_gap.excludes_zero and item.damage_gap.point > 0.0
-            else "no separation between the two damages"
+            f"calibration damaged beyond the accuracy loss, excess {excess}"
+            if item.calibration_damaged
+            else f"no calibration damage beyond the accuracy loss, excess {excess}"
         )
         _console.print(f"  {item.pair.label}: {verdict}")
-        if item.damage_gap.excludes_zero and item.damage_gap.point > 0.0:
-            moved = _interval(
-                item.delta_confidence.point,
-                item.delta_confidence.low,
-                item.delta_confidence.high,
-            )
-            if item.confidence_shifted:
-                _console.print(f"    confidence moved {moved}")
-            else:
-                _console.print(
-                    f"    [yellow]confidence did not move ({moved}), so the ECE delta follows "
-                    "from the accuracy loss on an overconfident baseline and says nothing "
-                    "about calibration itself[/yellow]"
-                )
+        if item.discrimination_moved:
+            auroc = _verdict_cell(item.verdict_interval("delta_auroc"))
+            _console.print(f"    confidence ranks right against wrong differently: {auroc}")
         if not item.delta_ece_sign_stable:
             _console.print(
                 "    [yellow]the ECE delta changes sign across the bin sweep, so no single "
@@ -694,3 +689,7 @@ def _summarise_plots(written: list[Path], plots_dir: Path) -> None:
     _console.print(f"[green]wrote {len(written)} figure(s)[/green] to [bold]{plots_dir}[/bold]")
     for path in written:
         _console.print(f"  {path}")
+
+
+def _verdict_cell(interval: ConfidenceInterval) -> str:
+    return _interval(interval.point, interval.low, interval.high)
