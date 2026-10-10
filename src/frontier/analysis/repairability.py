@@ -27,7 +27,7 @@ from frontier.analysis.load import (
     load_seed_split_predictions,
     load_split_predictions,
 )
-from frontier.analysis.significance import VariantPair, resolve_pairs
+from frontier.analysis.significance import References, VariantPair, resolve_pairs
 from frontier.io.predictions import MissingSidecarError, PredictionRows, QidArray
 from frontier.metrics.bootstrap import (
     DEFAULT_RESAMPLES,
@@ -310,7 +310,7 @@ def repairability_pairs(
     tidy: pd.DataFrame,
     *,
     root: Path,
-    references: Mapping[str, str],
+    references: References | Mapping[str, str],
     n_bins: int = DEFAULT_BINS,
     n_resamples: int = DEFAULT_RESAMPLES,
     rng: int | None = 0,

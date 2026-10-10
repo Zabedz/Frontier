@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from frontier.analysis.load import XCost
     from frontier.analysis.repairability import Repairability, RepairabilityPair
     from frontier.analysis.residual_coverage import CoverageRow
-    from frontier.analysis.significance import PairSignificance
+    from frontier.analysis.significance import PairSignificance, References
 
 # The analysis stack pulls matplotlib and pandas, so `plot` imports it in the body to keep
 # `frontier run` startup cheap.
@@ -468,8 +468,8 @@ def _summarise_calibration_set(
             _console.print(f"wrote {written}")
 
 
-def _reference_map(references: Path | None) -> dict[str, str]:
-    """The backend-to-reference map, from ``--references`` or the repo-relative default."""
+def _reference_map(references: Path | None) -> References:
+    """The reference map, from ``--references`` or the repo-relative default."""
     from frontier.analysis import DEFAULT_REFERENCES_PATH, load_references  # noqa: PLC0415
 
     path = DEFAULT_REFERENCES_PATH if references is None else references

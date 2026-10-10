@@ -128,42 +128,78 @@ class PairSignificance:
         return bool(intervals) and all(interval.excludes_zero for interval in intervals)
 
 
-def load_references(path: Path = DEFAULT_REFERENCES_PATH) -> dict[str, str]:
-    """Read the backend-to-reference-variant map."""
+@dataclass(frozen=True, slots=True)
+class References:
+    """The reference variant for each backend, with per-model overrides.
+
+    ``default`` serves every model; ``by_model`` maps a model id to the backends whose
+    reference differs for that model, as for the 0.5B student.
+    """
+
+    default: Mapping[str, str]
+    by_model: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+
+    def for_variant(self, backend: str, model_id: str) -> str | None:
+        """The reference a variant on ``backend`` scoring ``model_id`` is measured against."""
+        override = self.by_model.get(model_id, {})
+        return override.get(backend, self.default.get(backend))
+
+
+def load_references(path: Path = DEFAULT_REFERENCES_PATH) -> References:
+    """Read ``references`` (backend to variant) and the optional ``by_model`` overrides."""
     with path.open(encoding="utf-8") as handle:
         loaded = yaml.safe_load(handle)
     if not isinstance(loaded, dict) or "references" not in loaded:
         raise ValueError(f"{path} has no top-level 'references' mapping")
-    references = loaded["references"]
-    if not isinstance(references, dict):
-        raise ValueError(f"{path}: 'references' must be a mapping, got {type(references).__name__}")
-    for backend, variant in references.items():
+    by_model = loaded.get("by_model") or {}
+    if not isinstance(by_model, dict):
+        raise ValueError(f"{path}: 'by_model' must be a mapping, got {type(by_model).__name__}")
+    return References(
+        default=_backend_map(path, "references", loaded["references"]),
+        by_model={
+            str(model): _backend_map(path, f"by_model.{model}", mapping)
+            for model, mapping in by_model.items()
+        },
+    )
+
+
+def _backend_map(path: Path, where: str, mapping: object) -> dict[str, str]:
+    if not isinstance(mapping, dict):
+        raise ValueError(f"{path}: {where!r} must be a mapping, got {type(mapping).__name__}")
+    for backend, variant in mapping.items():
         if not isinstance(variant, str):
             raise ValueError(
-                f"{path}: reference for backend {backend!r} must be a variant name, got {variant!r}"
+                f"{path}: {where} reference for backend {backend!r} must be a variant name, "
+                f"got {variant!r}"
             )
-    return {str(backend): str(variant) for backend, variant in references.items()}
+    return {str(backend): str(variant) for backend, variant in mapping.items()}
 
 
 def resolve_pairs(
-    tidy: pd.DataFrame, references: Mapping[str, str]
+    tidy: pd.DataFrame, references: References | Mapping[str, str]
 ) -> tuple[list[VariantPair], list[Skipped]]:
-    """Pair every variant with the reference for its backend, on each task separately.
+    """Pair every variant with the reference for its backend and model, on each task.
 
-    A reference is one deterministic run, so one scored at several seeds is skipped. A
-    variant may carry any number of training seeds, each scoring the reference's items.
+    A plain mapping is the per-backend default for every model. A reference that scores a
+    different model from the variant is skipped, so no pairing crosses models. A reference
+    is one deterministic run, so one scored at several seeds is skipped. A variant may carry
+    any number of training seeds, each scoring the reference's items.
     """
+    if not isinstance(references, References):
+        references = References(default=references)
     pairs: list[VariantPair] = []
     skipped: list[Skipped] = []
     if tidy.empty:
         return pairs, skipped
     seeds = _seeds_by_variant(tidy)
+    models = _model_by_variant(tidy)
     for _, subset in tidy.groupby(["variant_name", "task_name"], sort=False):
         first = subset.iloc[0]
         variant = str(first["variant_name"])
         task = str(first["task_name"])
         backend = str(first["backend"])
-        reference = references.get(backend)
+        model = str(first["model_id"])
+        reference = references.for_variant(backend, model)
         if reference is None:
             skipped.append(Skipped(variant, task, f"no reference configured for backend {backend}"))
             continue
@@ -173,6 +209,15 @@ def resolve_pairs(
         if (reference, task) not in seeds:
             skipped.append(
                 Skipped(variant, task, f"reference {reference} has no row on task {task}")
+            )
+            continue
+        if models[(reference, task)] != model:
+            skipped.append(
+                Skipped(
+                    variant,
+                    task,
+                    f"reference {reference} scores {models[(reference, task)]}, not {model}",
+                )
             )
             continue
         if len(seeds[(reference, task)]) != 1:
@@ -384,7 +429,7 @@ def significance_table(
     tidy: pd.DataFrame,
     *,
     root: Path,
-    references: Mapping[str, str],
+    references: References | Mapping[str, str],
     n_bins: int = DEFAULT_BINS,
     sweep_bins: Sequence[int] = DEFAULT_SWEEP,
     confidence_level: float = 0.95,
@@ -507,6 +552,13 @@ def to_frame(results: Sequence[PairSignificance]) -> pd.DataFrame:
         for item in results
     ]
     return pd.DataFrame.from_records(records)
+
+
+def _model_by_variant(tidy: pd.DataFrame) -> dict[tuple[str, str], str]:
+    return {
+        (str(variant), str(task)): str(subset["model_id"].iloc[0])
+        for (variant, task), subset in tidy.groupby(["variant_name", "task_name"], sort=False)
+    }
 
 
 def _seeds_by_variant(tidy: pd.DataFrame) -> dict[tuple[str, str], frozenset[int]]:

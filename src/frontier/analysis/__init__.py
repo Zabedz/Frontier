@@ -48,6 +48,7 @@ from frontier.analysis.repairability import (
 from frontier.analysis.significance import (
     DEFAULT_REFERENCES_PATH,
     PairSignificance,
+    References,
     VariantPair,
     load_references,
     pair_significance,
@@ -64,6 +65,7 @@ __all__ = [
     "X_AXES",
     "NotRecalibratableError",
     "PairSignificance",
+    "References",
     "Repairability",
     "RepairabilityPair",
     "Skipped",

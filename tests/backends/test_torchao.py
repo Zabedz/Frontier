@@ -58,14 +58,14 @@ def test_filter_takes_linears_and_skips_the_output_head() -> None:
     assert not quantizes(torch.nn.Embedding(4, 4), "model.embed_tokens")
 
 
-def test_cpu_computes_in_fp32_and_cuda_in_bf16() -> None:
+def test_cpu_computes_in_fp32_and_cuda_in_the_fp16_of_its_reference() -> None:
     def provider(device: str) -> TorchaoLogitProvider:
         return TorchaoLogitProvider(
             model_id=SMOL, device=device, weight_dtype="int3", bit_width=3, group_size=32
         )
 
     assert provider("cpu")._compute_dtype_name() == "float32"
-    assert provider("cuda")._compute_dtype_name() == "bfloat16"
+    assert provider("cuda")._compute_dtype_name() == "float16"
 
 
 @pytest.mark.slow

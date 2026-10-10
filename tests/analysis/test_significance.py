@@ -17,6 +17,7 @@ import pytest
 from frontier.analysis.load import load_predictions_for_variant, load_tidy
 from frontier.analysis.significance import (
     DEFAULT_REFERENCES_PATH,
+    References,
     VariantPair,
     load_references,
     pair_significance,
@@ -44,6 +45,8 @@ HIT_RATE = 0.65
 HEADLINE_BINS = 7
 INTERVAL_FIELDS = 3  # low, point, high per sweep entry
 REFERENCES = {"hf": "fp16", "llama_cpp": "gguf-q8_0"}
+QWEN_3B = "Qwen/Qwen2.5-3B-Instruct"
+QWEN_05B = "Qwen/Qwen2.5-0.5B-Instruct"
 
 
 def _gold(n: int = N_ITEMS) -> LabelArray:
@@ -69,13 +72,19 @@ def _row(
     config_hash: str,
     seed: int = 0,
     task_name: str = "mmlu",
+    model: str | None = None,
 ) -> ResultRow:
     base = sample_row()
     return replace(
         base,
         variant_name=name,
         backend=replace(base.backend, inference_backend=backend, track=track),  # type: ignore[arg-type]
-        provenance=replace(base.provenance, config_hash=config_hash, seed=seed),
+        provenance=replace(
+            base.provenance,
+            config_hash=config_hash,
+            seed=seed,
+            model_id=model or base.provenance.model_id,
+        ),
         task=replace(base.task, task_name=task_name),
     )
 
@@ -294,9 +303,57 @@ def test_to_frame_is_empty_for_no_results() -> None:
 
 def test_load_references_reads_the_shipped_config() -> None:
     references = load_references()
-    assert references["hf"] == "fp16"
-    assert references["llama_cpp"] == "gguf-q8_0"
+    assert references.default["hf"] == "fp16"
+    assert references.default["llama_cpp"] == "gguf-q8_0"
+    assert references.for_variant("torchao", QWEN_3B) == "fp16"
+    assert references.for_variant("torchao", QWEN_05B) == "student-fp16"
+    assert references.for_variant("hf", QWEN_05B) == "student-fp16"
+    assert references.for_variant("vllm", QWEN_05B) == "fp16-vllm"
     assert DEFAULT_REFERENCES_PATH.exists()
+
+
+def test_load_references_rejects_a_non_mapping_by_model_block(tmp_path: Path) -> None:
+    path = tmp_path / "significance.yaml"
+    path.write_text("references:\n  hf: fp16\nby_model:\n  - x\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="'by_model' must be a mapping"):
+        load_references(path)
+
+
+def test_resolve_pairs_takes_a_per_model_reference(tmp_path: Path) -> None:
+    store, _root = _store_with(
+        tmp_path,
+        [
+            _row(name="fp16", backend="hf", track="A", config_hash="a" * 64, model=QWEN_3B),
+            _row(name="ptq", backend="torchao", track="A", config_hash="b" * 64, model=QWEN_3B),
+            _row(name="s-fp16", backend="hf", track="A", config_hash="c" * 64, model=QWEN_05B),
+            _row(name="s-ptq", backend="torchao", track="A", config_hash="d" * 64, model=QWEN_05B),
+        ],
+    )
+    references = References(
+        default={"hf": "fp16", "torchao": "fp16"},
+        by_model={QWEN_05B: {"hf": "s-fp16", "torchao": "s-fp16"}},
+    )
+    pairs, _skipped = resolve_pairs(load_tidy(store), references)
+    assert {(pair.variant, pair.reference) for pair in pairs} == {
+        ("ptq", "fp16"),
+        ("s-ptq", "s-fp16"),
+    }
+
+
+def test_resolve_pairs_refuses_a_reference_scoring_another_model(tmp_path: Path) -> None:
+    store, _root = _store_with(
+        tmp_path,
+        [
+            _row(name="fp16", backend="hf", track="A", config_hash="a" * 64, model=QWEN_3B),
+            _row(name="s-ptq", backend="hf", track="A", config_hash="d" * 64, model=QWEN_05B),
+        ],
+    )
+    pairs, skipped = resolve_pairs(load_tidy(store), {"hf": "fp16"})
+    assert pairs == []
+    assert any(
+        skip.variant == "s-ptq" and f"scores {QWEN_3B}, not {QWEN_05B}" in skip.reason
+        for skip in skipped
+    )
 
 
 def test_load_references_rejects_a_file_with_no_references_mapping(tmp_path: Path) -> None:

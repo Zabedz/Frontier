@@ -10,10 +10,17 @@
 # That makes the GGUF numbers a within-GGUF ladder rather than a loss against full
 # precision, which is what the cross-runtime replication claim rests on.
 #
-# torchao is absent: registry.py raises NotImplementedError, so no torchao row exists
-# to reference. Variants on a backend with no entry are reported as skipped.
+# Variants on a backend with no entry are reported as skipped.
 
 references:
   hf: fp16
   llama_cpp: gguf-q8_0
   vllm: fp16-vllm
+  torchao: fp16       # torchao quantises the HF model on load, so its baseline is HF fp16
+
+# Per-model overrides. A pair whose reference scores a different model is skipped, so the
+# 0.5B student needs its own baselines here.
+by_model:
+  Qwen/Qwen2.5-0.5B-Instruct:
+    hf: student-fp16
+    torchao: student-fp16

@@ -1,0 +1,16 @@
+name: student-ptq-3bit-torchao
+family: ptq
+track: A
+model:
+  model_id: Qwen/Qwen2.5-0.5B-Instruct
+backend:
+  inference_backend: torchao
+  weight_dtype: int3
+  kv_cache_dtype: fp16
+  gpu_offload_layers: -1
+quant:
+  method: torchao-intx       # IntxWeightOnlyConfig, group-wise
+  bit_width: 3
+  group_size: 32
+# The matched control for student-qat-3bit-full: identical model and quant config, so the
+# only difference is whether the weights were trained.

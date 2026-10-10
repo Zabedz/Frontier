@@ -45,8 +45,9 @@ def quantizes(module: Any, fqn: str) -> bool:
 class TorchaoLogitProvider(HFLogitProvider):
     """``HFLogitProvider`` with the linear layers quantised to ``int<bit_width>`` after load.
 
-    The forward runs in bf16 on CUDA (Qwen's native dtype) and fp32 on CPU; torchao
-    dequantises each group to that dtype inside the matmul.
+    The forward runs in fp16 on CUDA, the dtype of the HF ``fp16`` reference it is paired
+    with, so quantisation is the only difference; fp32 on CPU. torchao dequantises each
+    group to that dtype inside the matmul.
     """
 
     def __init__(
@@ -67,7 +68,7 @@ class TorchaoLogitProvider(HFLogitProvider):
         self._torchao_version = "unknown"
 
     def _compute_dtype_name(self) -> str:
-        return "float32" if self.device == "cpu" else "bfloat16"
+        return "float32" if self.device == "cpu" else "float16"
 
     def _prepare(self, model: Any) -> Any:
         import torchao  # noqa: PLC0415
