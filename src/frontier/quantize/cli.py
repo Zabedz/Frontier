@@ -53,6 +53,10 @@ def run(
         typer.Option("--eval", help="Eval profile whose seeds to produce (default: base's)."),
     ] = None,
     mode: Annotated[str, typer.Option("--mode", help="smoke | full.")] = "full",
+    max_tokens: Annotated[
+        int | None,
+        typer.Option("--max-tokens", min=1, help="Cap a QAT run's training tokens (timing)."),
+    ] = None,
     config_root: Annotated[Path, typer.Option("--config-root", help="Config root.")] = Path(
         "configs"
     ),
@@ -68,7 +72,14 @@ def run(
         config, eval_profile=eval_profile, mode=run_mode, config_root=config_root
     )
     for seed in resolved.eval_spec.seeds:
-        out = _produce(resolved.variant, resolved.backend, checkpoints, seed=seed, mode=run_mode)
+        out = _produce(
+            resolved.variant,
+            resolved.backend,
+            checkpoints,
+            seed=seed,
+            mode=run_mode,
+            max_tokens=max_tokens,
+        )
         _console.print(
             f"[green]checkpoint ready[/green] for [bold]{resolved.variant.name}[/bold] "
             f"seed {seed}: {out}"
@@ -82,6 +93,7 @@ def _produce(
     *,
     seed: int,
     mode: RunMode = "full",
+    max_tokens: int | None = None,
 ) -> Path:
     inference_backend = backend["inference_backend"]
     if inference_backend == "torchao":
@@ -95,7 +107,7 @@ def _produce(
             checkpoints_root=checkpoints,
             seed=seed,
             device=resolve_device(mode),
-            max_tokens=SMOKE_TRAIN_TOKENS if mode == "smoke" else None,
+            max_tokens=_token_cap(mode, max_tokens),
         )
     if inference_backend == "vllm":
         return produce_compressed_tensors(variant, backend, checkpoints_root=checkpoints, seed=seed)
@@ -124,3 +136,10 @@ def _snapshot(model_id: str, revision: str) -> Path:  # pragma: no cover
     from huggingface_hub import snapshot_download  # noqa: PLC0415
 
     return Path(snapshot_download(model_id, revision=revision))
+
+
+def _token_cap(mode: RunMode, max_tokens: int | None) -> int | None:
+    """``--max-tokens`` when given, else the smoke cap in smoke mode, else no cap."""
+    if max_tokens is not None:
+        return max_tokens
+    return SMOKE_TRAIN_TOKENS if mode == "smoke" else None

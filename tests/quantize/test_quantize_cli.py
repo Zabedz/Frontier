@@ -65,8 +65,10 @@ def test_run_produces_one_checkpoint_per_profile_seed(
         *,
         seed: int,
         mode: RunMode,
+        max_tokens: int | None,
     ) -> Path:
         assert mode == "full"
+        assert max_tokens is None
         seeds.append(seed)
         return checkpoints / f"ckpt-{seed}"
 
@@ -114,3 +116,13 @@ def test_qat_dispatches_to_the_trainer_with_the_smoke_cap(
     out = cli._produce(resolved.variant, resolved.backend, tmp_path, seed=1, mode=mode)
     assert out == tmp_path / "qat"
     assert seen == {"seed": 1, "device": "cpu", "max_tokens": cap, "root": tmp_path}
+
+
+@pytest.mark.parametrize(
+    ("mode", "flag", "expected"),
+    [("full", 491_520, 491_520), ("smoke", 2048, 2048), ("smoke", None, cli.SMOKE_TRAIN_TOKENS)],
+)
+def test_max_tokens_overrides_the_mode_default(
+    mode: RunMode, flag: int | None, expected: int | None
+) -> None:
+    assert cli._token_cap(mode, flag) == expected
