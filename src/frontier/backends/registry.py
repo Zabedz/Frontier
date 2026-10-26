@@ -11,12 +11,12 @@ from typing import TYPE_CHECKING, Any
 
 from frontier.backends.hf import HFLogitProvider
 from frontier.backends.llama_cpp import LlamaCppLogitProvider
-from frontier.backends.torchao import TorchaoLogitProvider
+from frontier.backends.torchao import ADAPTER_FILE, TorchaoLogitProvider
 from frontier.backends.vllm import VllmLogitProvider
 from frontier.eval.provider import LogitProvider
 from frontier.latency.native import NativeLlamaCppLatency, NativeVllmLatency
 from frontier.latency.rig import default_latency
-from frontier.quantize.methods import TORCHAO_PTQ_METHOD, is_qat_method
+from frontier.quantize.methods import QAT_LORA_METHOD, TORCHAO_PTQ_METHOD, is_qat_method
 from frontier.quantize.paths import checkpoint_path
 from frontier.schema import RunMode, VariantConfig
 
@@ -85,15 +85,16 @@ def _torchao_provider(
     checkpoints_root: Path,
     seed: int,
 ) -> LogitProvider:
-    """PTQ quantises the base model on load; QAT quantises its trained checkpoint the same way."""
+    """PTQ and full QAT quantise their weights on load; QAT+LoRA adds its adapter to the base."""
     quant = variant.quant
     if quant is None:
         raise ValueError(f"torchao variant {variant.name!r} has no quant block")
-    if is_qat_method(quant.method):
+    model_id, adapter = variant.model.model_id, None
+    if quant.method == QAT_LORA_METHOD:
+        adapter = checkpoint_path(variant, backend, root=checkpoints_root, seed=seed) / ADAPTER_FILE
+    elif is_qat_method(quant.method):
         model_id = str(checkpoint_path(variant, backend, root=checkpoints_root, seed=seed))
-    elif quant.method == TORCHAO_PTQ_METHOD:
-        model_id = variant.model.model_id
-    else:
+    elif quant.method != TORCHAO_PTQ_METHOD:
         raise ValueError(f"unknown torchao method {quant.method!r}")
     return TorchaoLogitProvider(
         model_id=model_id,
@@ -102,6 +103,7 @@ def _torchao_provider(
         bit_width=quant.bit_width,
         group_size=quant.group_size,
         revision=variant.model.model_revision,
+        adapter=adapter,
     )
 
 

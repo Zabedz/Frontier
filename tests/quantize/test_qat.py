@@ -8,14 +8,18 @@ from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from itertools import pairwise
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
 
+from frontier.backends.torchao import ADAPTER_FILE
 from frontier.pipeline.config import resolve_config
 from frontier.quantize.paths import checkpoint_path
 from frontier.quantize.qat import (
     METADATA_FILE,
+    completion_markers,
+    factors_from_merged,
     lr_multiplier,
     pack_tokens,
     produce_qat,
@@ -130,12 +134,21 @@ def test_a_ptq_variant_is_not_a_qat_variant() -> None:
         require_qat_spec(_resolve("ptq-3bit-torchao").variant)
 
 
-def test_producer_returns_early_for_a_complete_checkpoint(tmp_path: Path) -> None:
-    resolved = _resolve("qat-3bit-lora")
+@pytest.mark.parametrize(
+    ("name", "weights"),
+    [("qat-3bit-lora", ADAPTER_FILE), ("student-qat-3bit-full", "config.json")],
+)
+def test_a_checkpoint_is_complete_with_its_weights_and_metadata(name: str, weights: str) -> None:
+    assert completion_markers(_resolve(name).variant) == (weights, METADATA_FILE)
+
+
+@pytest.mark.parametrize("name", ["qat-3bit-lora", "student-qat-3bit-full"])
+def test_producer_returns_early_for_a_complete_checkpoint(tmp_path: Path, name: str) -> None:
+    resolved = _resolve(name)
     out = checkpoint_path(resolved.variant, resolved.backend, root=tmp_path, seed=1)
     out.mkdir(parents=True)
-    (out / "config.json").write_text("{}", encoding="utf-8")
-    (out / METADATA_FILE).write_text("{}", encoding="utf-8")
+    for marker in completion_markers(resolved.variant):
+        (out / marker).write_text("{}", encoding="utf-8")
 
     def no_stream(_corpus: str) -> list[str]:
         raise AssertionError("a complete checkpoint must not train again")
@@ -149,6 +162,29 @@ def test_producer_returns_early_for_a_complete_checkpoint(tmp_path: Path) -> Non
         texts=no_stream,
     )
     assert result == out
+
+
+def test_factors_from_merged_recover_a_low_rank_update_under_merge_noise() -> None:
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(0)
+    base = {"q": torch.randn(12, 10), "v": torch.randn(8, 10)}
+    true = {n: torch.randn(w.shape[0], 2) @ torch.randn(2, 10) * 0.05 for n, w in base.items()}
+    # bf16 rounding of the merged sum, as a bf16 LoRA merge leaves it.
+    merged = {name: (base[name] + true[name]).bfloat16().float() for name in base}
+    factors = factors_from_merged(base, merged, rank=2)
+    assert set(factors) == {"q.up", "q.down", "v.up", "v.down"}
+    for name, update in true.items():
+        assert factors[f"{name}.up"].shape == (update.shape[0], 2)
+        assert factors[f"{name}.down"].shape == (2, 10)
+        recovered = factors[f"{name}.up"] @ factors[f"{name}.down"]
+        noise = (merged[name] - base[name] - update).norm()
+        assert (recovered - update).norm() <= noise
+
+
+def test_factors_from_merged_refuse_mismatched_layers() -> None:
+    torch = pytest.importorskip("torch")
+    with pytest.raises(ValueError, match="different layers"):
+        factors_from_merged({"q": torch.zeros(2, 2)}, {"k": torch.zeros(2, 2)}, rank=1)
 
 
 @pytest.mark.slow
@@ -189,6 +225,56 @@ def test_one_qat_step_on_smollm2_saves_a_checkpoint_the_torchao_provider_serves(
         checkpoints_root=tmp_path,
         seed=0,
     )
-    assert provider.model_id == str(out)  # type: ignore[attr-defined]
+    if name == "qat-3bit-lora":
+        assert provider.model_id == resolved.variant.model.model_id  # type: ignore[attr-defined]
+        assert provider.adapter == out / ADAPTER_FILE  # type: ignore[attr-defined]
+        assert not (out / "model.safetensors").exists()
+    else:
+        assert provider.model_id == str(out)  # type: ignore[attr-defined]
     logits = provider.next_token_logits([build_prompt("What is 2 + 2?", ["3", "4", "5", "6"])])
     assert np.all(np.isfinite(logits))
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    not os.environ.get("FRONTIER_LIVE_MODELS"),
+    reason="live model download; set FRONTIER_LIVE_MODELS=1 to run",
+)
+def test_the_served_lora_model_computes_the_trained_function_on_cpu(tmp_path: Path) -> None:
+    # CPU only: on CUDA, training quantises bf16 weights and serving fp16 ones (~1% of codes).
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("torchao")
+    pytest.importorskip("peft")
+    from frontier.backends.torchao import TorchaoLogitProvider  # noqa: PLC0415
+    from frontier.quantize.qat import _lora_factors, _prepared_model, save_adapter  # noqa: PLC0415
+
+    resolved = _resolve("qat-3bit-lora", mode="smoke")
+    variant, spec = resolved.variant, require_qat_spec(resolved.variant)
+    assert variant.quant is not None
+    torch.manual_seed(0)
+    trained = _prepared_model(variant, spec, device="cpu", lora=True)
+    # A fresh adapter has B = 0; give it weight so the comparison tests something.
+    for name, param in trained.named_parameters():
+        if "lora_B" in name:
+            torch.nn.init.normal_(param, std=0.02)
+    trained.eval()
+    ids = torch.arange(1, 33).reshape(2, 16)
+    with torch.inference_mode():
+        expected = trained(input_ids=ids).logits
+
+    def served_logits(adapter: Path | None) -> Any:
+        provider = TorchaoLogitProvider(
+            model_id=variant.model.model_id,
+            device="cpu",
+            weight_dtype="int3",
+            bit_width=variant.quant.bit_width,
+            group_size=variant.quant.group_size,
+            adapter=adapter,
+        )
+        model, _ = provider.loaded_model()
+        with torch.inference_mode():
+            return model(input_ids=ids).logits
+
+    actual = served_logits(save_adapter(_lora_factors(trained), tmp_path))
+    assert not torch.allclose(served_logits(None), expected, atol=1e-3)
+    assert torch.allclose(actual, expected, atol=1e-4)

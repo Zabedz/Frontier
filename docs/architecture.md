@@ -83,7 +83,7 @@ distilled student checkpoint. Pruning (Wanda / magnitude 2:4) is out of scope.
 | gguf-q5_k_m             | ptq      | llama.cpp/CUDA | B | latency track |
 | gguf-q8_0               | ptq      | llama.cpp/CUDA | B | ~FP16; low priority |
 | ptq-3bit-torchao        | ptq      | torchao        | A | matched control for QAT |
-| qat-3bit-lora           | qat      | torchao        | A | teacher, QAT+LoRA |
+| qat-3bit-lora           | qat      | torchao        | A | teacher, QAT+LoRA; rank-16 adapter served unquantised beside the 3-bit base (~1% extra parameters) |
 | student-qat-3bit-full   | qat      | torchao        | A | 0.5B student, full-param QAT |
 | distill-hardlabel       | distill  | HF             | A | sequence-KD baseline |
 | distill-softlabel-topk  | distill  | HF             | A | offline top-k KL, k=64 |
@@ -121,7 +121,7 @@ package list and bring-up are in `docker/README.md`.
 |---|---|
 | PTQ INT4 | `llmcompressor` (GPTQ + AWQ, emits compressed-tensors, served by vLLM on the marlin kernels); `gptqmodel` as a secondary GPTQ cross-check |
 | 4-bit / int8 weight-only | `bitsandbytes` (NF4, LLM.int8), `torchao` |
-| QAT | `torchao` QATConfig prepare/convert, so PTQ and QAT share one config and differ only in whether weights were adapted. Unsloth is an optional GPU accelerator; being GPU-only, it stays off the smoke path |
+| QAT | `torchao` QATConfig prepare/convert, so PTQ and QAT share one config and differ only in whether weights were adapted. QAT+LoRA saves only its adapter, which the provider attaches to the quantised base. Unsloth is an optional GPU accelerator; being GPU-only, it stays off the smoke path |
 | GGUF | `llama.cpp` / `llama-cpp-python` built with CUDA, full offload |
 | Distillation | offline top-k cache plus a custom KD loss on HF Trainer / TRL; TRL GKD for the single online reference comparison |
 

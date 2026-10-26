@@ -12,7 +12,7 @@ import pytest
 from frontier.backends.hf import HFLogitProvider
 from frontier.backends.llama_cpp import LlamaCppLogitProvider
 from frontier.backends.registry import build_latency_probe, build_provider
-from frontier.backends.torchao import TorchaoLogitProvider
+from frontier.backends.torchao import ADAPTER_FILE, TorchaoLogitProvider
 from frontier.backends.vllm import VllmLogitProvider
 from frontier.latency.native import NativeLlamaCppLatency, NativeVllmLatency
 from frontier.latency.rig import default_latency
@@ -96,14 +96,26 @@ def test_full_llama_cpp_serves_the_gguf() -> None:
     assert provider.gguf_path == checkpoint_path(variant, backend, root=CHECKPOINTS)
 
 
-@pytest.mark.parametrize("name", ["qat-3bit-lora", "student-qat-3bit-full"])
-def test_torchao_qat_serves_each_seeds_trained_checkpoint(name: str) -> None:
-    variant, backend = _resolve(name)
+def test_torchao_full_qat_serves_each_seeds_trained_checkpoint() -> None:
+    variant, backend = _resolve("student-qat-3bit-full")
     provider = build_provider(
         variant, backend, device="cuda", mode="full", checkpoints_root=CHECKPOINTS, seed=2
     )
     assert isinstance(provider, TorchaoLogitProvider)
     assert provider.model_id == str(checkpoint_path(variant, backend, root=CHECKPOINTS, seed=2))
+    assert provider.adapter is None
+    assert (provider.bit_width, provider.group_size) == (3, 32)
+
+
+def test_torchao_lora_qat_serves_the_base_with_each_seeds_adapter() -> None:
+    variant, backend = _resolve("qat-3bit-lora")
+    provider = build_provider(
+        variant, backend, device="cuda", mode="full", checkpoints_root=CHECKPOINTS, seed=2
+    )
+    assert isinstance(provider, TorchaoLogitProvider)
+    assert provider.model_id == variant.model.model_id
+    checkpoint = checkpoint_path(variant, backend, root=CHECKPOINTS, seed=2)
+    assert provider.adapter == checkpoint / ADAPTER_FILE
     assert (provider.bit_width, provider.group_size) == (3, 32)
 
 

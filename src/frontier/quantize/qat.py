@@ -1,10 +1,9 @@
-"""QAT producer: torchao fake-quant training, optionally through LoRA, saved as a plain HF
-checkpoint.
+"""QAT producer: torchao fake-quant training, full-parameter or through LoRA.
 
-torchao's QAT ``convert`` step on the trained model gives bit-identical logits to loading
-the saved weights and quantising on load, so ``TorchaoLogitProvider`` serves QAT and the
-PTQ control through one path and the two arms differ only in their weights. ``torch``,
-``transformers``, ``peft``, and ``torchao`` are imported on first use.
+Full QAT saves a plain HF checkpoint, which ``TorchaoLogitProvider`` quantises on load as it
+does the PTQ control. QAT+LoRA saves only its adapter, which the provider attaches beside the
+quantised base. ``torch``, ``transformers``, ``peft``, ``safetensors``, and ``torchao`` are
+imported on first use.
 """
 
 from __future__ import annotations
@@ -20,7 +19,13 @@ from typing import Any, Protocol
 import numpy as np
 import numpy.typing as npt
 
-from frontier.backends.torchao import intx_weight_only_config, quantizes
+from frontier.backends.torchao import (
+    ADAPTER_FILE,
+    DOWN,
+    UP,
+    intx_weight_only_config,
+    quantizes,
+)
 from frontier.quantize.methods import QAT_LORA_METHOD, is_qat_method
 from frontier.quantize.paths import checkpoint_path
 from frontier.schema import QATSpec, TrainingCorpus, VariantConfig
@@ -37,7 +42,8 @@ GRAD_CLIP_NORM = 1.0
 ADAM_BETAS = (0.9, 0.95)
 LOG_EVERY_STEPS = 10
 METADATA_FILE = "qat.json"
-_COMPLETION_MARKERS = ("config.json", METADATA_FILE)
+# peft prefixes the wrapped model's module names with this.
+PEFT_PREFIX = "base_model.model."
 
 TextStream = Callable[[TrainingCorpus], Iterable[str]]
 TokenRows = npt.NDArray[np.int64]  # (n_rows, seq_len) packed token ids
@@ -117,11 +123,51 @@ def produce_qat(
     """
     spec = require_qat_spec(variant)
     out = checkpoint_path(variant, backend, root=checkpoints_root, seed=seed)
-    if out.is_dir() and all((out / marker).exists() for marker in _COMPLETION_MARKERS):
+    if out.is_dir() and all((out / marker).exists() for marker in completion_markers(variant)):
         return out
     budget = spec.train_tokens if max_tokens is None else min(max_tokens, spec.train_tokens)
     stream = (texts or stream_corpus)(spec.corpus)
     return _train(variant, spec, out, seed=seed, device=device, budget=budget, texts=stream)
+
+
+def completion_markers(variant: VariantConfig) -> tuple[str, str]:
+    """The files whose presence marks a finished checkpoint for ``variant``."""
+    assert variant.quant is not None
+    weights = ADAPTER_FILE if variant.quant.method == QAT_LORA_METHOD else "config.json"
+    return weights, METADATA_FILE
+
+
+def factors_from_merged(
+    base: Mapping[str, Any], merged: Mapping[str, Any], *, rank: int
+) -> dict[str, Any]:
+    """Adapter factors recovered from merged LoRA weights, as ``ADAPTER_FILE`` keys.
+
+    ``merged - base`` is the adapter plus the bf16 rounding of the merge; truncating its SVD at
+    ``rank`` keeps the adapter and drops most of that rounding. ``base`` and ``merged`` map
+    linear names to weights. Raises ``ValueError`` when the two name different layers.
+    """
+    import torch  # noqa: PLC0415
+
+    if base.keys() != merged.keys():
+        differing = sorted(base.keys() ^ merged.keys())
+        raise ValueError(f"base and merged weights name different layers: {differing}")
+    factors: dict[str, Any] = {}
+    for name in base:
+        delta = merged[name].to(torch.float32) - base[name].to(torch.float32)
+        u, s, vh = torch.linalg.svd(delta, full_matrices=False)
+        factors[f"{name}.{UP}"] = (u[:, :rank] * s[:rank]).cpu().contiguous()
+        factors[f"{name}.{DOWN}"] = vh[:rank].cpu().contiguous()
+    return factors
+
+
+def save_adapter(factors: Mapping[str, Any], out: Path) -> Path:
+    """Write ``factors`` to ``out / ADAPTER_FILE`` as fp32 and return the path."""
+    import torch  # noqa: PLC0415
+    from safetensors.torch import save_file  # noqa: PLC0415
+
+    path = out / ADAPTER_FILE
+    save_file({k: v.to(torch.float32).contiguous() for k, v in factors.items()}, str(path))
+    return path
 
 
 def stream_corpus(corpus: TrainingCorpus) -> Iterator[str]:  # pragma: no cover
@@ -163,11 +209,12 @@ def _train(  # pragma: no cover
     start = time.time()
     steps, final_loss = _run_steps(model, rows[order], spec, device=device)
 
-    if lora:
-        model = model.merge_and_unload()
-    _drop_fake_quant(model)
     out.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(out)
+    if lora:
+        save_adapter(_lora_factors(model), out)
+    else:
+        _drop_fake_quant(model)
+        model.save_pretrained(out)
     tokenizer.save_pretrained(out)
     metadata = {
         "variant": variant.name,
@@ -258,6 +305,19 @@ def _with_lora(model: Any, spec: QATSpec) -> Any:  # pragma: no cover
     # Checkpointed blocks need a grad-carrying input when every base weight is frozen.
     wrapped.enable_input_require_grads()
     return wrapped
+
+
+def _lora_factors(model: Any) -> dict[str, Any]:  # pragma: no cover
+    """The trained adapter as ``ADAPTER_FILE`` keys: up = B x scaling, down = A."""
+    factors: dict[str, Any] = {}
+    for name, module in model.named_modules():
+        if not hasattr(module, "lora_A") or "default" not in module.lora_A:
+            continue
+        layer = name.removeprefix(PEFT_PREFIX)
+        scaling = module.scaling["default"]
+        factors[f"{layer}.{UP}"] = module.lora_B["default"].weight.detach().float().cpu() * scaling
+        factors[f"{layer}.{DOWN}"] = module.lora_A["default"].weight.detach().float().cpu()
+    return factors
 
 
 def _drop_fake_quant(model: Any) -> None:  # pragma: no cover
