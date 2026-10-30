@@ -1,5 +1,10 @@
 # Frontier
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/frontier-dark.png">
+  <img alt="Frontier: the FP16 baseline's stated confidence runs far ahead of its accuracy, and across four compression pairs accuracy moves more than stated confidence does" src="docs/assets/frontier-light.png">
+</picture>
+
 A benchmark for whether compression degrades a model's calibration faster than its
 accuracy, and whether that holds across compression families (post-training
 quantization, quantization-aware training, distillation). Calibration (ECE, Brier,
@@ -12,6 +17,9 @@ distilled first, and the check that authorizes the swap is an accuracy compariso
 against the uncompressed model. If calibration degrades faster than accuracy, that
 check passes while the deployed model's confidence has stopped tracking its
 correctness, and every abstention threshold tuned against the original is set wrong.
+
+This project is funded by a [Rapid Grant](https://bluedot.org/grants/rapid) from
+BlueDot Impact.
 
 ## Status
 
