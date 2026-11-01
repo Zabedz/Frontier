@@ -243,7 +243,7 @@ def to_frame(found: Sequence[Repairability]) -> pd.DataFrame:
 
 @dataclass(frozen=True, slots=True)
 class RepairabilityPair:
-    """One variant's post-repair residual against its backend reference.
+    """One variant's post-repair residual against one of its configured references.
 
     The per-variant table says how much error survived; this says whether the difference
     between two variants' survivals is bigger than the noise. Methodology section 6 asks
@@ -463,6 +463,7 @@ def pairs_to_frame(found: Sequence[RepairabilityPair]) -> pd.DataFrame:
                 "task": item.pair.task,
                 "backend": item.pair.backend,
                 "track": item.pair.track,
+                "crosses_model": item.pair.crosses_model,
                 "n_bins": item.n_bins,
                 "n_report": item.n_report,
                 "residual_variant": item.residual_variant,

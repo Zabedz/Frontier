@@ -349,3 +349,29 @@ def test_training_seeds_build_one_provider_each_over_one_question_sample(
         assert qid is not None
         qids.append(qid)
     assert all(np.array_equal(qid, qids[0]) for qid in qids)
+
+
+def test_a_distill_row_records_the_student_it_scored(tmp_path: Path) -> None:
+    seeds: list[int] = []
+
+    def factory(variant: VariantConfig, device: str, *, seed: int) -> _SyntheticProvider:  # noqa: ARG001
+        seeds.append(seed)
+        return _SyntheticProvider()
+
+    def loader(spec: EvalSpec, *, seed: int) -> list[EvalRecord]:  # noqa: ARG001
+        return _records(N_ITEMS)
+
+    rows = run(
+        CONFIG_ROOT / "variants" / "distill-softlabel-topk.yaml",
+        mode="full",
+        config_root=CONFIG_ROOT,
+        results_root=tmp_path,
+        provider_factory=factory,
+        slice_loader=loader,
+        timestamp="2026-11-01T00:00:00+00:00",
+        git_sha="deadbeef",
+        measure_latency=False,
+    )
+    assert seeds == [0, 1, 2]
+    assert {row.family for row in rows} == {"distill"}
+    assert {row.provenance.model_id for row in rows} == {"Qwen/Qwen2.5-0.5B-Instruct"}

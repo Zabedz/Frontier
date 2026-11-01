@@ -122,3 +122,13 @@ def _reject(tmp_path: Path, variant_yaml: str) -> None:
     variant.write_text(variant_yaml)
     with pytest.raises(jsonschema.ValidationError):
         resolve_config(variant, mode="full", config_root=CONFIG_ROOT)
+
+
+def test_smoke_swaps_both_the_teacher_and_the_student() -> None:
+    resolved = resolve_config(
+        CONFIG_ROOT / "variants" / "distill-softlabel-topk.yaml",
+        mode="smoke",
+        config_root=CONFIG_ROOT,
+    )
+    assert resolved.variant.model.model_id == "HuggingFaceTB/SmolLM2-135M-Instruct"
+    assert resolved.variant.model.student_id == "HuggingFaceTB/SmolLM2-135M-Instruct"

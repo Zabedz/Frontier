@@ -45,7 +45,8 @@ config (YAML)  ->  pipeline  ->  result row (parquet/jsonl, append-only)
 | `eval/` | task loaders, prompt building, confidence extraction, correctness |
 | `backends/` | inference backends satisfying the eval logit seam (HF and torchao for Track A, vLLM and llama.cpp for Track B). Model loading lives here |
 | `quantize/` | PTQ producers (llm-compressor GPTQ/AWQ, bnb, torchao, GGUF) and QAT |
-| `distill/` | offline teacher top-k cache plus student training (KD losses) |
+| `training/` | the corpus stream and packing, and the AdamW loop, shared by QAT and distillation |
+| `distill/` | the offline teacher cache (top-64 plus a rest bucket) with its fidelity check, the three student losses, the trainer, and held-out scoring |
 | `latency/` | TTFT / inter-token timing, memory and machine-state capture |
 | `pipeline/` | the CLI and the config-to-row runner |
 | `io/` | result-store read/write, provenance stamping |
@@ -85,8 +86,9 @@ distilled student checkpoint. Pruning (Wanda / magnitude 2:4) is out of scope.
 | ptq-3bit-torchao        | ptq      | torchao        | A | matched control for QAT |
 | qat-3bit-lora           | qat      | torchao        | A | teacher, QAT+LoRA; rank-16 adapter served unquantised beside the 3-bit base (~1% extra parameters) |
 | student-qat-3bit-full   | qat      | torchao        | A | 0.5B student, full-param QAT |
-| distill-hardlabel       | distill  | HF             | A | sequence-KD baseline |
-| distill-softlabel-topk  | distill  | HF             | A | offline top-k KL, k=64 |
+| distill-softlabel-topk  | distill  | HF             | A | 0.5B student, KL to the 3B's cached top-64 plus a rest bucket |
+| distill-hardlabel       | distill  | HF             | A | 0.5B student, cross-entropy on the 3B's top-1 token per position |
+| distill-corpus          | distill  | HF             | A | control: 0.5B fine-tuned on the same rows' own next tokens |
 
 ## Metrics
 
@@ -123,7 +125,7 @@ package list and bring-up are in `docker/README.md`.
 | 4-bit / int8 weight-only | `bitsandbytes` (NF4, LLM.int8), `torchao` |
 | QAT | `torchao` QATConfig prepare/convert, so PTQ and QAT share one config and differ only in whether weights were adapted. QAT+LoRA saves only its adapter, which the provider attaches to the quantised base. Unsloth is an optional GPU accelerator; being GPU-only, it stays off the smoke path |
 | GGUF | `llama.cpp` / `llama-cpp-python` built with CUDA, full offload |
-| Distillation | offline top-k cache plus a custom KD loss on HF Trainer / TRL; TRL GKD for the single online reference comparison |
+| Distillation | an offline teacher cache (`.npy` memmaps of the top-64 and a rest bucket) and chunked KD losses in plain PyTorch, on the AdamW loop QAT uses |
 
 ## Conventions
 

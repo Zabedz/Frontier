@@ -13,7 +13,7 @@ number.
 |---|---|---|---|
 | Provenance | git_sha | str | commit the run was produced from |
 | Provenance | config_hash | str | hash of the resolved variant config |
-| Provenance | model_id | str | e.g. Qwen/Qwen2.5-3B-Instruct |
+| Provenance | model_id | str | e.g. Qwen/Qwen2.5-3B-Instruct; a distill row records its student, whose trained checkpoint is found from `config_hash` and `seed` |
 | Provenance | model_revision | str | HF revision / commit pin |
 | Provenance | hardware_id | str | GPU model + pod id |
 | Provenance | driver_version | str | NVIDIA driver |

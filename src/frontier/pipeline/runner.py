@@ -18,6 +18,7 @@ import numpy as np
 
 from frontier.backends.hf import resolve_device
 from frontier.backends.registry import build_latency_probe, build_provider
+from frontier.distill.spec import scored_model
 from frontier.eval.extract import exact_match, score_items, to_robustness, to_task_spec
 from frontier.eval.loaders import load_arc_challenge, load_mmlu, load_mmlu_redux
 from frontier.eval.provider import LogitProvider
@@ -127,6 +128,7 @@ def run(
     sha = git_sha if git_sha is not None else read_git_sha()
 
     lat_mem: LatencyMemory | None = None
+    model = scored_model(resolved.variant)
     rows: list[ResultRow] = []
     for seed in pending:
         provider = (
@@ -165,8 +167,8 @@ def run(
         )
         prov = stamp_provenance(
             config_hash=resolved.config_hash,
-            model_id=resolved.variant.model.model_id,
-            model_revision=resolved.variant.model.model_revision,
+            model_id=model.model_id,
+            model_revision=model.revision,
             seed=seed,
             hardware=hardware,
             git_sha=sha,

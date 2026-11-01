@@ -5,6 +5,7 @@ The full-mode providers are lazy, so constructing one asserts dispatch on a lapt
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from frontier.backends.llama_cpp import LlamaCppLogitProvider
 from frontier.backends.registry import build_latency_probe, build_provider
 from frontier.backends.torchao import ADAPTER_FILE, TorchaoLogitProvider
 from frontier.backends.vllm import VllmLogitProvider
+from frontier.distill.paths import STUDENT_METADATA_FILE, student_path
 from frontier.latency.native import NativeLlamaCppLatency, NativeVllmLatency
 from frontier.latency.rig import default_latency
 from frontier.pipeline.config import resolve_config
@@ -129,3 +131,63 @@ def test_latency_probe_maps_backends() -> None:
     assert build_latency_probe(vllm_backend, mode="smoke") is default_latency
     _, torchao_backend = _resolve("ptq-3bit-torchao")
     assert build_latency_probe(torchao_backend, mode="full") is default_latency
+
+
+def _trained_student(variant: VariantConfig, root: Path, *, seed: int, capped: bool) -> Path:
+    path = student_path(variant, root=root, seed=seed)
+    path.mkdir(parents=True)
+    (path / "config.json").write_text("{}", encoding="utf-8")
+    metadata = {"capped": capped, "budget_tokens": 16_384 if capped else 30_000_000}
+    (path / STUDENT_METADATA_FILE).write_text(json.dumps(metadata), encoding="utf-8")
+    return path
+
+
+def test_a_distill_variant_serves_each_seeds_trained_student(tmp_path: Path) -> None:
+    variant, backend = _resolve("distill-softlabel-topk")
+    trained = _trained_student(variant, tmp_path, seed=2, capped=False)
+    provider = build_provider(
+        variant, backend, device="cuda", mode="full", checkpoints_root=tmp_path, seed=2
+    )
+    assert isinstance(provider, HFLogitProvider)
+    assert provider.model_id == str(trained)
+    assert provider.weight_dtype == "fp16"
+    assert QWEN not in provider.model_id
+
+
+@pytest.mark.parametrize("mode", ["smoke", "full"])
+def test_a_distill_variant_without_its_student_raises(tmp_path: Path, mode: RunMode) -> None:
+    variant, backend = _resolve("distill-hardlabel")
+    with pytest.raises(FileNotFoundError, match="no trained student"):
+        build_provider(variant, backend, device="cpu", mode=mode, checkpoints_root=tmp_path)
+
+
+def test_a_capped_student_is_not_served_in_full_mode(tmp_path: Path) -> None:
+    variant, backend = _resolve("distill-corpus")
+    _trained_student(variant, tmp_path, seed=0, capped=True)
+    with pytest.raises(ValueError, match="capped budget"):
+        build_provider(variant, backend, device="cuda", mode="full", checkpoints_root=tmp_path)
+
+
+def test_a_distill_variant_at_another_dtype_is_refused(tmp_path: Path) -> None:
+    variant, backend = _resolve("distill-corpus")
+    _trained_student(variant, tmp_path, seed=0, capped=False)
+    with pytest.raises(ValueError, match="saved and scored in"):
+        build_provider(
+            variant,
+            {**backend, "weight_dtype": "nf4"},
+            device="cuda",
+            mode="full",
+            checkpoints_root=tmp_path,
+        )
+
+
+def test_a_distill_variant_on_another_backend_is_refused(tmp_path: Path) -> None:
+    variant, backend = _resolve("distill-corpus")
+    with pytest.raises(ValueError, match="served on hf"):
+        build_provider(
+            variant,
+            {**backend, "inference_backend": "torchao"},
+            device="cpu",
+            mode="full",
+            checkpoints_root=tmp_path,
+        )

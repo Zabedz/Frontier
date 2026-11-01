@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from frontier.analysis.load import XCost
     from frontier.analysis.repairability import Repairability, RepairabilityPair
     from frontier.analysis.residual_coverage import CoverageRow
-    from frontier.analysis.significance import PairSignificance, References
+    from frontier.analysis.significance import PairSignificance, References, VariantPair
 
 # The analysis stack pulls matplotlib and pandas, so `plot` imports it in the body to keep
 # `frontier run` startup cheap.
@@ -199,7 +199,7 @@ def significance(
         typer.Option("--out", help="Parquet output (default: <results>/significance.parquet)."),
     ] = None,
 ) -> None:
-    """Pair each variant against its backend's reference and bootstrap the deltas.
+    """Pair each variant against its configured references and bootstrap the deltas.
 
     The damage gap says whether calibration degrades faster than accuracy; the damage
     ratio says by what multiple.
@@ -551,7 +551,7 @@ def _summarise_significance(
     if not found:
         _console.print("[yellow]no pairs to test[/yellow]")
         return
-    table = Table(title="Paired significance (variant against its backend reference)")
+    table = Table(title="Paired significance (variant against each configured reference)")
     for column in (
         "pair",
         "n",
@@ -581,7 +581,9 @@ def _summarise_significance(
                 "delta_auroc",
             )
         ]
-        table.add_row(item.pair.label, str(item.n_items), str(item.n_seeds), *cells, ratio_cell)
+        table.add_row(
+            _pair_cell(item.pair), str(item.n_items), str(item.n_seeds), *cells, ratio_cell
+        )
     _console.print(table)
     if any(item.n_seeds > 1 for item in found):
         _console.print(
@@ -660,13 +662,13 @@ def _summarise_repairability_pairs(
         _console.print(f"[yellow]no residual pair for {skip.variant}: {skip.reason}[/yellow]")
     if not found:
         return
-    table = Table(title="Residual after repair, against the backend reference")
+    table = Table(title="Residual after repair, against each configured reference")
     for column in ("pair", "residual", "reference", "gap", "beyond noise"):
         table.add_column(column, overflow="fold")
     for item in found:
         gap = item.residual_gap
         table.add_row(
-            item.pair.label,
+            _pair_cell(item.pair),
             f"{item.residual_variant:.4f}",
             f"{item.residual_reference:.4f}",
             _interval(gap.point, gap.low, gap.high),
@@ -693,3 +695,7 @@ def _summarise_plots(written: list[Path], plots_dir: Path) -> None:
 
 def _verdict_cell(interval: ConfidenceInterval) -> str:
     return _interval(interval.point, interval.low, interval.high)
+
+
+def _pair_cell(pair: VariantPair) -> str:
+    return f"{pair.label} (cross-model)" if pair.crosses_model else pair.label

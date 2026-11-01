@@ -33,7 +33,7 @@ from frontier.io.predictions import (
     write_predictions_rows,
 )
 from frontier.io.store import ResultStore, append_row
-from frontier.schema import ResultRow
+from frontier.schema import Family, ResultRow
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "io"))
 
@@ -73,11 +73,13 @@ def _row(
     seed: int = 0,
     task_name: str = "mmlu",
     model: str | None = None,
+    family: Family = "baseline",
 ) -> ResultRow:
     base = sample_row()
     return replace(
         base,
         variant_name=name,
+        family=family,
         backend=replace(base.backend, inference_backend=backend, track=track),  # type: ignore[arg-type]
         provenance=replace(
             base.provenance,
@@ -499,6 +501,7 @@ def test_to_frame_column_contract_is_stable() -> None:
         "task",
         "backend",
         "track",
+        "crosses_model",
         "n_items",
         "n_bins",
         "delta_accuracy",
@@ -649,3 +652,205 @@ def test_seeded_pair_refuses_a_seed_copy_over_other_items() -> None:
             [_predictions(gold, seed=2), _predictions(np.roll(gold, 1), seed=3)],
             n_resamples=RESAMPLES,
         )
+
+
+DISTILLED = "distill-softlabel-topk"
+IS_REFERENCE = "is the reference for its backend"
+# (variant, family, backend, track, model, seeds) as banked in each store on the Mac.
+BANKED_STORES: dict[str, list[tuple[str, Family, str, str, str, tuple[int, ...]]]] = {
+    "results": [
+        ("fp16", "baseline", "hf", "A", QWEN_3B, (0,)),
+        ("int4-nf4", "ptq", "hf", "A", QWEN_3B, (0,)),
+        ("int8-weightonly", "ptq", "hf", "A", QWEN_3B, (0,)),
+        ("gguf-q8_0", "ptq", "llama_cpp", "B", QWEN_3B, (0,)),
+        ("gguf-q5_k_m", "ptq", "llama_cpp", "B", QWEN_3B, (0,)),
+        ("gguf-q4_k_m", "ptq", "llama_cpp", "B", QWEN_3B, (0,)),
+        ("int4-gptq", "ptq", "vllm", "B", QWEN_3B, (0,)),
+        ("int4-awq", "ptq", "vllm", "B", QWEN_3B, (0,)),
+        ("int8-w8a8", "ptq", "vllm", "B", QWEN_3B, (0,)),
+        ("fp16-vllm", "baseline", "vllm", "B", QWEN_3B, (0,)),
+        ("int4-gptq-ood", "ptq", "vllm", "B", QWEN_3B, (0,)),
+        ("int4-awq-ood", "ptq", "vllm", "B", QWEN_3B, (0,)),
+    ],
+    "results-qat": [
+        ("student-fp16", "baseline", "hf", "A", QWEN_05B, (0,)),
+        ("student-ptq-3bit-torchao", "ptq", "torchao", "A", QWEN_05B, (0,)),
+        ("fp16", "baseline", "hf", "A", QWEN_3B, (0,)),
+        ("ptq-3bit-torchao", "ptq", "torchao", "A", QWEN_3B, (0,)),
+        ("student-qat-3bit-full", "qat", "torchao", "A", QWEN_05B, (0, 1, 2)),
+        ("qat-3bit-lora", "qat", "torchao", "A", QWEN_3B, (0, 1, 2)),
+    ],
+    "results-seeds": [
+        ("fp16-vllm", "baseline", "vllm", "B", QWEN_3B, (0,)),
+        ("int4-gptq", "ptq", "vllm", "B", QWEN_3B, (0, 1, 2)),
+        ("int4-awq", "ptq", "vllm", "B", QWEN_3B, (0, 1, 2)),
+    ],
+}
+BANKED_PAIRS = {
+    "results": {
+        ("int4-nf4", "fp16"),
+        ("int8-weightonly", "fp16"),
+        ("gguf-q5_k_m", "gguf-q8_0"),
+        ("gguf-q4_k_m", "gguf-q8_0"),
+        ("int4-gptq", "fp16-vllm"),
+        ("int4-awq", "fp16-vllm"),
+        ("int8-w8a8", "fp16-vllm"),
+        ("int4-gptq-ood", "fp16-vllm"),
+        ("int4-awq-ood", "fp16-vllm"),
+    },
+    "results-qat": {
+        ("student-ptq-3bit-torchao", "student-fp16"),
+        ("ptq-3bit-torchao", "fp16"),
+        ("student-qat-3bit-full", "student-fp16"),
+        ("qat-3bit-lora", "fp16"),
+    },
+    "results-seeds": {("int4-gptq", "fp16-vllm"), ("int4-awq", "fp16-vllm")},
+}
+BANKED_SKIPS = {
+    "results": {"fp16", "fp16-vllm", "gguf-q8_0"},
+    "results-qat": {"student-fp16", "fp16"},
+    "results-seeds": {"fp16-vllm"},
+}
+# The baseline family pair: the off-the-shelf 0.5B against the teacher.
+FAMILY_PAIRS = {"results-qat": {("student-fp16", "fp16")}}
+
+
+def _banked_rows(store: str) -> list[ResultRow]:
+    return [
+        _row(
+            name=name,
+            backend=backend,
+            track=track,
+            config_hash=f"{index:064x}",
+            seed=seed,
+            model=model,
+            family=family,
+        )
+        for index, (name, family, backend, track, model, seeds) in enumerate(BANKED_STORES[store])
+        for seed in seeds
+    ]
+
+
+@pytest.mark.parametrize("store", sorted(BANKED_STORES))
+def test_the_shipped_references_keep_every_banked_pair(tmp_path: Path, store: str) -> None:
+    banked, _root = _store_with(tmp_path, _banked_rows(store), sidecars=False)
+    pairs, skipped = resolve_pairs(load_tidy(banked), load_references())
+    same_model = {(pair.variant, pair.reference) for pair in pairs if not pair.crosses_model}
+    crossing = {(pair.variant, pair.reference) for pair in pairs if pair.crosses_model}
+    assert same_model == BANKED_PAIRS[store]
+    assert crossing == FAMILY_PAIRS.get(store, set())
+    assert {(skip.variant, skip.reason) for skip in skipped} == {
+        (variant, IS_REFERENCE) for variant in BANKED_SKIPS[store]
+    }
+
+
+def _distill_rows(
+    *, with_teacher: bool = True, teacher_seeds: tuple[int, ...] = (0,)
+) -> list[ResultRow]:
+    rows = [
+        _row(name="student-fp16", backend="hf", track="A", config_hash="b" * 64, model=QWEN_05B)
+    ]
+    rows += [
+        _row(
+            name=DISTILLED,
+            backend="hf",
+            track="A",
+            config_hash="c" * 64,
+            seed=seed,
+            model=QWEN_05B,
+            family="distill",
+        )
+        for seed in (0, 1, 2)
+    ]
+    if with_teacher:
+        rows += [
+            _row(
+                name="fp16", backend="hf", track="A", config_hash="a" * 64, seed=seed, model=QWEN_3B
+            )
+            for seed in teacher_seeds
+        ]
+    return rows
+
+
+def test_a_distilled_student_pairs_with_its_own_model_and_with_the_teacher(
+    tmp_path: Path,
+) -> None:
+    store, _root = _store_with(tmp_path, _distill_rows(), sidecars=False)
+    pairs, _skipped = resolve_pairs(load_tidy(store), load_references())
+    assert {(pair.variant, pair.reference, pair.crosses_model) for pair in pairs} == {
+        (DISTILLED, "student-fp16", False),
+        (DISTILLED, "fp16", True),
+        ("student-fp16", "fp16", True),
+    }
+
+
+def test_the_family_pair_is_skipped_without_the_teacher_row(tmp_path: Path) -> None:
+    store, _root = _store_with(tmp_path, _distill_rows(with_teacher=False), sidecars=False)
+    pairs, skipped = resolve_pairs(load_tidy(store), load_references())
+    assert [(pair.variant, pair.reference) for pair in pairs] == [(DISTILLED, "student-fp16")]
+    assert (DISTILLED, "family reference fp16 has no row on task mmlu") in {
+        (skip.variant, skip.reason) for skip in skipped
+    }
+
+
+def test_a_family_reference_at_several_seeds_is_skipped(tmp_path: Path) -> None:
+    store, _root = _store_with(tmp_path, _distill_rows(teacher_seeds=(0, 1)), sidecars=False)
+    _pairs, skipped = resolve_pairs(load_tidy(store), load_references())
+    assert any(
+        skip.variant == DISTILLED and skip.reason.startswith("family reference fp16 is scored")
+        for skip in skipped
+    )
+
+
+def test_references_without_family_extras_pair_as_before(tmp_path: Path) -> None:
+    store, _root = _store_with(tmp_path, _distill_rows(), sidecars=False)
+    references = References(default={"hf": "fp16"}, by_model={QWEN_05B: {"hf": "student-fp16"}})
+    pairs, _skipped = resolve_pairs(load_tidy(store), references)
+    assert [(pair.variant, pair.reference, pair.crosses_model) for pair in pairs] == [
+        (DISTILLED, "student-fp16", False)
+    ]
+
+
+def test_load_references_reads_the_shipped_family_extras() -> None:
+    references = load_references()
+    assert references.family_reference("distill", "hf") == "fp16"
+    assert references.family_reference("baseline", "hf") == "fp16"
+    assert references.family_reference("distill", "vllm") is None
+    assert references.family_reference("ptq", "hf") is None
+
+
+def test_load_references_rejects_a_non_mapping_family_block(tmp_path: Path) -> None:
+    path = tmp_path / "significance.yaml"
+    path.write_text("references:\n  hf: fp16\nalso_by_family:\n  - x\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="'also_by_family' must be a mapping"):
+        load_references(path)
+
+
+def test_significance_table_runs_both_distilled_pairs_end_to_end(tmp_path: Path) -> None:
+    store, root = _store_with(tmp_path, _distill_rows())
+    found, _skipped = significance_table(
+        load_tidy(store), root=root, references=load_references(), n_resamples=RESAMPLES
+    )
+    frame = to_frame(found)
+    distilled = frame[frame["variant"] == DISTILLED]
+    assert dict(zip(distilled["reference"], distilled["crosses_model"], strict=True)) == {
+        "student-fp16": False,
+        "fp16": True,
+    }
+    assert set(distilled["n_seeds"]) == {3}
+
+
+def test_the_family_pair_stands_when_the_per_model_reference_scores_another_model(
+    tmp_path: Path,
+) -> None:
+    """With no per-model entry the default reference is the teacher's row, refused for the
+    per-model pair; the family pair still measures the student against it."""
+    store, _root = _store_with(tmp_path, _distill_rows(), sidecars=False)
+    references = References(default={"hf": "fp16"}, also_by_family={"distill": {"hf": "fp16"}})
+    pairs, skipped = resolve_pairs(load_tidy(store), references)
+    assert {(pair.variant, pair.reference, pair.crosses_model) for pair in pairs} == {
+        (DISTILLED, "fp16", True)
+    }
+    assert (DISTILLED, f"reference fp16 scores {QWEN_3B}, not {QWEN_05B}") in {
+        (skip.variant, skip.reason) for skip in skipped
+    }

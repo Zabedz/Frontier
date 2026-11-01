@@ -17,6 +17,7 @@ from typing import Any
 import jsonschema
 import yaml
 
+from frontier.distill.spec import validate_distill
 from frontier.schema import (
     DistillSpec,
     EvalSpec,
@@ -120,7 +121,7 @@ def _to_variant_config(raw: Mapping[str, Any]) -> VariantConfig:
     quant = raw.get("quant")
     qat = raw.get("qat")
     distill = raw.get("distill")
-    return VariantConfig(
+    variant = VariantConfig(
         name=raw["name"],
         family=raw["family"],
         track=raw["track"],
@@ -131,6 +132,8 @@ def _to_variant_config(raw: Mapping[str, Any]) -> VariantConfig:
         qat=QATSpec(**qat) if qat else None,
         distill=DistillSpec(**distill) if distill else None,
     )
+    validate_distill(variant)
+    return variant
 
 
 def _to_eval_spec(block: Mapping[str, Any]) -> EvalSpec:

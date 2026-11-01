@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import pytest
 
 from frontier.latency.machine import ClockReading
-from frontier.latency.rig import LatencyMemory, measure_latency_memory
+from frontier.latency.rig import LatencyMemory, _snapshot_dir, measure_latency_memory
 from frontier.latency.timing import TrialClock
+from frontier.pipeline.config import resolve_config
 from frontier.schema import LatencySpec, MachineState, Memory
+
+CONFIG_ROOT = Path(__file__).resolve().parents[2] / "configs"
 
 _SCRIPTED_SPANS = [5.0, 2.0, 4.0]  # one TTFT then two ITL spans per trial
 _ITL_MEDIAN_MS = 3.0  # median of the two pooled ITL spans across trials
@@ -101,3 +105,21 @@ def test_cost_proxy_uses_the_largest_batch_by_default() -> None:
 def test_reference_batch_override_changes_the_proxy() -> None:
     result = _run(reference_batch=1)
     assert result.tok_s_per_gb == pytest.approx(_expected_proxy(1))
+
+
+def test_the_snapshot_of_a_distill_row_is_the_students(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hub = pytest.importorskip("huggingface_hub")
+    asked: list[tuple[str, str]] = []
+
+    def cached(repo_id: str, filename: str, *, revision: str) -> str:
+        asked.append((repo_id, revision))
+        return str(tmp_path / filename)
+
+    monkeypatch.setattr(hub, "try_to_load_from_cache", cached)
+    resolved = resolve_config(
+        CONFIG_ROOT / "variants" / "distill-corpus.yaml", config_root=CONFIG_ROOT
+    )
+    assert _snapshot_dir(resolved) == tmp_path
+    assert asked == [("Qwen/Qwen2.5-0.5B-Instruct", "main")]

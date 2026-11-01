@@ -2,22 +2,21 @@
 
 Full QAT saves a plain HF checkpoint, which ``TorchaoLogitProvider`` quantises on load as it
 does the PTQ control. QAT+LoRA saves only its adapter, which the provider attaches beside the
-quantised base. ``torch``, ``transformers``, ``peft``, ``safetensors``, and ``torchao`` are
-imported on first use.
+quantised base. The corpus, its packing, and the AdamW loop live in ``frontier.training``,
+shared with distillation, and are re-exported here. ``torch``, ``transformers``, ``peft``,
+``safetensors``, and ``torchao`` are imported on first use.
 """
 
 from __future__ import annotations
 
 import json
-import math
 import time
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 import numpy as np
-import numpy.typing as npt
 
 from frontier.backends.torchao import (
     ADAPTER_FILE,
@@ -28,63 +27,34 @@ from frontier.backends.torchao import (
 )
 from frontier.quantize.methods import QAT_LORA_METHOD, is_qat_method
 from frontier.quantize.paths import checkpoint_path
-from frontier.schema import QATSpec, TrainingCorpus, VariantConfig
+from frontier.schema import QATSpec, VariantConfig
+from frontier.training.corpus import (
+    TRAINING_CORPORA,
+    TextStream,
+    TokenRows,
+    pack_tokens,
+    stream_corpus,
+)
+from frontier.training.loop import lr_multiplier, run_steps
 
-# (hf path, config, split, text field). Streamed in the dataset's own order, so every seed
-# trains on the same tokens and the seed only reorders them.
-TRAINING_CORPORA: dict[TrainingCorpus, tuple[str, str, str, str]] = {
-    "fineweb_edu": ("HuggingFaceFW/fineweb-edu", "sample-10BT", "train", "text"),
-}
+__all__ = [
+    "METADATA_FILE",
+    "TRAINING_CORPORA",
+    "completion_markers",
+    "factors_from_merged",
+    "lr_multiplier",
+    "pack_tokens",
+    "produce_qat",
+    "require_qat_spec",
+    "save_adapter",
+    "stream_corpus",
+]
 
 # The projections Qwen2 and Llama-family blocks carry; LoRA wraps every one.
 LORA_TARGETS = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj")
-GRAD_CLIP_NORM = 1.0
-ADAM_BETAS = (0.9, 0.95)
-LOG_EVERY_STEPS = 10
 METADATA_FILE = "qat.json"
 # peft prefixes the wrapped model's module names with this.
 PEFT_PREFIX = "base_model.model."
-
-TextStream = Callable[[TrainingCorpus], Iterable[str]]
-TokenRows = npt.NDArray[np.int64]  # (n_rows, seq_len) packed token ids
-
-
-class _Encoder(Protocol):
-    eos_token_id: int | None
-
-    def __call__(self, text: str, *, add_special_tokens: bool) -> Mapping[str, list[int]]: ...
-
-
-def pack_tokens(
-    texts: Iterable[str], tokenizer: _Encoder, *, seq_len: int, max_tokens: int
-) -> TokenRows:
-    """Tokenise, join with EOS, and cut into full ``seq_len`` rows until ``max_tokens``.
-
-    Returns an ``int64`` array ``(n_rows, seq_len)``; a trailing partial row is dropped.
-    Raises ``ValueError`` when the stream ends before one full row.
-    """
-    if tokenizer.eos_token_id is None:
-        raise ValueError("tokenizer has no eos_token_id to separate documents")
-    n_rows = max(max_tokens // seq_len, 1)
-    needed = n_rows * seq_len
-    buffer: list[int] = []
-    for text in texts:
-        buffer.extend(tokenizer(text, add_special_tokens=False)["input_ids"])
-        buffer.append(tokenizer.eos_token_id)
-        if len(buffer) >= needed:
-            break
-    usable = (min(len(buffer), needed) // seq_len) * seq_len
-    if usable == 0:
-        raise ValueError(f"text stream ended before one {seq_len}-token row")
-    return np.asarray(buffer[:usable], dtype=np.int64).reshape(-1, seq_len)
-
-
-def lr_multiplier(step: int, *, total_steps: int, warmup_steps: int) -> float:
-    """Linear warmup to 1, then cosine decay to 0 at ``total_steps``."""
-    if step < warmup_steps:
-        return (step + 1) / warmup_steps
-    progress = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
-    return 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))
 
 
 def require_qat_spec(variant: VariantConfig) -> QATSpec:
@@ -170,15 +140,6 @@ def save_adapter(factors: Mapping[str, Any], out: Path) -> Path:
     return path
 
 
-def stream_corpus(corpus: TrainingCorpus) -> Iterator[str]:  # pragma: no cover
-    """The corpus's documents in the dataset's streamed order."""
-    import datasets  # noqa: PLC0415
-
-    hf_path, config, split, field = TRAINING_CORPORA[corpus]
-    for row in datasets.load_dataset(hf_path, config, split=split, streaming=True):
-        yield str(row[field])
-
-
 def _train(  # pragma: no cover
     variant: VariantConfig,
     spec: QATSpec,
@@ -258,38 +219,16 @@ def _prepared_model(  # pragma: no cover
 def _run_steps(  # pragma: no cover
     model: Any, rows: TokenRows, spec: QATSpec, *, device: str
 ) -> tuple[int, float]:
-    """AdamW over ``rows`` in order, warmup then cosine; returns (steps, last step's loss)."""
+    """``run_steps`` over packed rows with HF's own next-token loss."""
     import torch  # noqa: PLC0415
 
-    cuda = device != "cpu"
-    params = [p for p in model.parameters() if p.requires_grad]
-    per_step = spec.micro_batch_size * spec.grad_accum
-    total_steps = max(len(rows) // per_step, 1)
-    warmup_steps = max(round(total_steps * spec.warmup_fraction), 1)
-    optimizer = torch.optim.AdamW(params, lr=spec.learning_rate, betas=ADAM_BETAS, weight_decay=0.0)
-    schedule = torch.optim.lr_scheduler.LambdaLR(
-        optimizer,
-        lambda step: lr_multiplier(step, total_steps=total_steps, warmup_steps=warmup_steps),
-    )
+    def micro_loss(first: int) -> Any:
+        ids = torch.from_numpy(rows[first : first + spec.micro_batch_size]).to(device)
+        return model(input_ids=ids, labels=ids).loss
+
     model.train()
-    start, loss_value = time.time(), math.nan
-    for step in range(total_steps):
-        loss_value = 0.0
-        for micro in range(spec.grad_accum):
-            first = step * per_step + micro * spec.micro_batch_size
-            ids = torch.from_numpy(rows[first : first + spec.micro_batch_size]).to(device)
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=cuda):
-                loss = model(input_ids=ids, labels=ids).loss / spec.grad_accum
-            loss.backward()
-            loss_value += float(loss.detach())
-        torch.nn.utils.clip_grad_norm_(params, GRAD_CLIP_NORM)
-        optimizer.step()
-        schedule.step()
-        optimizer.zero_grad(set_to_none=True)
-        if step % LOG_EVERY_STEPS == 0 or step == total_steps - 1:
-            rate = (step + 1) * per_step * spec.seq_len / (time.time() - start)
-            print(f"step {step + 1}/{total_steps} loss {loss_value:.4f} {rate:,.0f} tok/s")
-    return total_steps, loss_value
+    params = [p for p in model.parameters() if p.requires_grad]
+    return run_steps(params, spec, n_rows=len(rows), micro_loss=micro_loss, device=device)
 
 
 def _with_lora(model: Any, spec: QATSpec) -> Any:  # pragma: no cover

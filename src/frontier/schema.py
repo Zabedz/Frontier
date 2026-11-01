@@ -13,6 +13,7 @@ Family = Literal["baseline", "ptq", "qat", "distill"]
 Track = Literal["A", "B"]
 CalibrationCorpus = Literal["none", "in_domain", "ood"]
 TrainingCorpus = Literal["fineweb_edu"]
+DistillMode = Literal["hard_label", "soft_label_topk", "corpus_label"]
 PromptStyle = Literal["zeroshot", "fiveshot"]
 Scoring = Literal["letter_softmax", "acc_norm"]
 PermutationScheme = Literal["none", "cyclic"]
@@ -216,9 +217,22 @@ class QATSpec:
 
 @dataclass(frozen=True, slots=True)
 class DistillSpec:
-    mode: Literal["hard_label", "soft_label_topk"]
+    """One distillation run: the per-position target and the training recipe.
+
+    Every mode trains on the same cached rows; ``mode`` picks the target: the teacher's top-1
+    token, its top-k distribution plus a rest bucket, or the corpus's next token. A step
+    consumes ``micro_batch_size * grad_accum`` rows of ``seq_len`` tokens.
+    """
+
+    mode: DistillMode
+    corpus: TrainingCorpus
+    train_tokens: int
+    seq_len: int
+    micro_batch_size: int
+    grad_accum: int
+    learning_rate: float
+    warmup_fraction: float
     top_k: int = 64
-    train_tokens: int = 50_000_000
     epochs: int = 1
     kd_temperature: float = 1.0
 

@@ -26,7 +26,7 @@ from frontier.analysis.repairability import (
     repairability_table,
     to_frame,
 )
-from frontier.analysis.significance import VariantPair
+from frontier.analysis.significance import References, VariantPair
 from frontier.io.predictions import (
     CorruptSidecarError,
     LabelArray,
@@ -39,7 +39,7 @@ from frontier.io.predictions import (
 )
 from frontier.io.store import ResultStore, append_row
 from frontier.metrics.bootstrap import ResidualInterval
-from frontier.schema import ResultRow
+from frontier.schema import Family, ResultRow
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "io"))
 
@@ -493,3 +493,56 @@ def test_a_multi_seed_variant_pairs_against_its_one_seed_reference(tmp_path: Pat
     assert pair.n_seeds == len(SEED_SHARPEN)
     assert pair.residual_gap.usable
     assert pair.residual_gap.low <= pair.residual_gap.point <= pair.residual_gap.high
+
+
+QWEN_3B = "Qwen/Qwen2.5-3B-Instruct"
+QWEN_05B = "Qwen/Qwen2.5-0.5B-Instruct"
+
+
+def _cross_model_store(tmp_path: Path) -> tuple[ResultStore, Path]:
+    """The teacher's fp16 row and a distilled 0.5B student, scored on the same items."""
+    rng = np.random.default_rng(7)
+    logits = rng.normal(0.0, 2.0, size=(N_ITEMS, 4))
+    gold = np.asarray([rng.choice(4, p=row) for row in _softmax(logits)], dtype=np.intp)
+    qids = [f"q{position}" for position in range(N_ITEMS)]
+    store = ResultStore(tmp_path)
+    variants: list[tuple[str, Family, str, float]] = [
+        ("fp16", "baseline", QWEN_3B, 1.0),
+        ("distill-corpus", "distill", QWEN_05B, SHARPEN),
+    ]
+    for index, (name, family, model, sharpen) in enumerate(variants):
+        base = sample_row()
+        config_hash = str(index) * 64
+        row: ResultRow = replace(
+            base,
+            variant_name=name,
+            family=family,
+            provenance=replace(base.provenance, config_hash=config_hash, model_id=model),
+        )
+        append_row(row, store)
+        write_predictions_rows(
+            _sidecar(_softmax(logits / sharpen), gold, qids),
+            root=tmp_path,
+            key=predictions_key(config_hash, 0, "mmlu"),
+        )
+    return store, tmp_path
+
+
+def test_a_family_pair_across_models_resolves_and_is_marked(tmp_path: Path) -> None:
+    store, root = _cross_model_store(tmp_path)
+    references = References(
+        default={"hf": "fp16"},
+        by_model={QWEN_05B: {"hf": "student-fp16"}},
+        also_by_family={"distill": {"hf": "fp16"}},
+    )
+    found, _skipped = repairability_pairs(
+        load_tidy(store), root=root, references=references, n_resamples=19
+    )
+    (pair,) = found
+    assert (pair.pair.variant, pair.pair.reference, pair.pair.crosses_model) == (
+        "distill-corpus",
+        "fp16",
+        True,
+    )
+    frame = pairs_to_frame(found)
+    assert list(frame["crosses_model"]) == [True]

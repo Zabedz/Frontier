@@ -1,5 +1,6 @@
-"""Distillation: the one-time offline teacher top-k logit cache (k plus a kept "rest"
-bucket so truncation does not bias calibration), the hard-label sequence-KD baseline, and
-the offline soft-label KL student trainer. Students are full fine-tuned, so the training
-regime does not confound the calibration comparison.
+"""Distillation: a one-time offline teacher cache (top-k probabilities plus a kept "rest"
+bucket, so truncation does not bias calibration) and three full fine-tuned student arms on
+its rows: soft labels (the top-k-plus-rest KL), token-level hard labels (the teacher's
+top-1), and the corpus-label control (the corpus's own next token). Full fine-tuning keeps
+the training regime out of the calibration comparison.
 """

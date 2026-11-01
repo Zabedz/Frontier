@@ -24,3 +24,13 @@ by_model:
   Qwen/Qwen2.5-0.5B-Instruct:
     hf: student-fp16
     torchao: student-fp16
+
+# A second pair by family, beside the per-model reference. It may cross models: both models
+# score the same items, so the pairing holds item for item. A distilled student is measured
+# against the teacher's fp16 row (what compressing the 3B into the 0.5B cost), and so is the
+# off-the-shelf 0.5B, the baseline for reading those pairs.
+also_by_family:
+  distill:
+    hf: fp16
+  baseline:
+    hf: fp16

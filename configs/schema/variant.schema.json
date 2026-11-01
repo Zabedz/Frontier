@@ -173,24 +173,65 @@
         "null"
       ],
       "additionalProperties": false,
+      "required": [
+        "mode",
+        "corpus",
+        "train_tokens",
+        "seq_len",
+        "micro_batch_size",
+        "grad_accum",
+        "learning_rate",
+        "warmup_fraction"
+      ],
       "properties": {
         "mode": {
           "enum": [
             "hard_label",
-            "soft_label_topk"
+            "soft_label_topk",
+            "corpus_label"
           ]
         },
-        "top_k": {
-          "type": "integer"
+        "corpus": {
+          "enum": [
+            "fineweb_edu"
+          ]
         },
         "train_tokens": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 1
+        },
+        "seq_len": {
+          "type": "integer",
+          "minimum": 2
+        },
+        "micro_batch_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "grad_accum": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "learning_rate": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "warmup_fraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "top_k": {
+          "type": "integer",
+          "minimum": 1
         },
         "epochs": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 1
         },
         "kd_temperature": {
-          "type": "number"
+          "type": "number",
+          "exclusiveMinimum": 0
         }
       }
     },

@@ -14,6 +14,7 @@ from itertools import product
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from frontier.distill.spec import scored_model
 from frontier.eval.provider import LogitProvider
 from frontier.latency.machine import (
     MachineProbe,
@@ -181,14 +182,15 @@ def _import_torch() -> Any:
 
 
 def _snapshot_dir(resolved: ResolvedConfig) -> Path | None:
-    """The variant's HF cache snapshot dir, or ``None`` when uncached; never hits the network."""
+    """The scored model's HF cache snapshot dir, or ``None`` when uncached; never hits the network.
+
+    For a distill variant that is the student's hub snapshot, which holds the same 2 bytes per
+    parameter as the fp16 student it served.
+    """
     try:
         from huggingface_hub import try_to_load_from_cache  # noqa: PLC0415
     except ImportError:
         return None
-    cached = try_to_load_from_cache(
-        resolved.variant.model.model_id,
-        "config.json",
-        revision=resolved.variant.model.model_revision,
-    )
+    model = scored_model(resolved.variant)
+    cached = try_to_load_from_cache(model.model_id, "config.json", revision=model.revision)
     return Path(cached).parent if isinstance(cached, str) else None

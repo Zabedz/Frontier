@@ -42,13 +42,17 @@ DEFAULT_REFERENCES_PATH = Path("configs/analysis/significance.yaml")
 
 @dataclass(frozen=True, slots=True)
 class VariantPair:
-    """One variant measured against the reference on its own backend."""
+    """One variant measured against a reference on its own backend.
+
+    ``crosses_model`` marks a family pair whose reference scores another model.
+    """
 
     variant: str
     reference: str
     task: str
     backend: str
     track: str
+    crosses_model: bool = False
 
     @property
     def label(self) -> str:
@@ -130,35 +134,48 @@ class PairSignificance:
 
 @dataclass(frozen=True, slots=True)
 class References:
-    """The reference variant for each backend, with per-model overrides.
+    """The reference variant for each backend, with per-model overrides and family extras.
 
     ``default`` serves every model; ``by_model`` maps a model id to the backends whose
-    reference differs for that model, as for the 0.5B student.
+    reference differs for that model, as for the 0.5B student. ``also_by_family`` names a
+    second reference for every variant of a family on a backend, which may score another
+    model, as the teacher's fp16 row does for a distilled student.
     """
 
     default: Mapping[str, str]
     by_model: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    also_by_family: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
     def for_variant(self, backend: str, model_id: str) -> str | None:
         """The reference a variant on ``backend`` scoring ``model_id`` is measured against."""
         override = self.by_model.get(model_id, {})
         return override.get(backend, self.default.get(backend))
 
+    def family_reference(self, family: str, backend: str) -> str | None:
+        """The second reference for a variant of ``family`` on ``backend``, if configured."""
+        return self.also_by_family.get(family, {}).get(backend)
+
 
 def load_references(path: Path = DEFAULT_REFERENCES_PATH) -> References:
-    """Read ``references`` (backend to variant) and the optional ``by_model`` overrides."""
+    """Read ``references`` (backend to variant) and the optional ``by_model`` overrides and
+    ``also_by_family`` extras."""
     with path.open(encoding="utf-8") as handle:
         loaded = yaml.safe_load(handle)
     if not isinstance(loaded, dict) or "references" not in loaded:
         raise ValueError(f"{path} has no top-level 'references' mapping")
-    by_model = loaded.get("by_model") or {}
-    if not isinstance(by_model, dict):
-        raise ValueError(f"{path}: 'by_model' must be a mapping, got {type(by_model).__name__}")
+    nested = {name: loaded.get(name) or {} for name in ("by_model", "also_by_family")}
+    for name, block in nested.items():
+        if not isinstance(block, dict):
+            raise ValueError(f"{path}: {name!r} must be a mapping, got {type(block).__name__}")
     return References(
         default=_backend_map(path, "references", loaded["references"]),
         by_model={
             str(model): _backend_map(path, f"by_model.{model}", mapping)
-            for model, mapping in by_model.items()
+            for model, mapping in nested["by_model"].items()
+        },
+        also_by_family={
+            str(family): _backend_map(path, f"also_by_family.{family}", mapping)
+            for family, mapping in nested["also_by_family"].items()
         },
     )
 
@@ -180,10 +197,12 @@ def resolve_pairs(
 ) -> tuple[list[VariantPair], list[Skipped]]:
     """Pair every variant with the reference for its backend and model, on each task.
 
-    A plain mapping is the per-backend default for every model. A reference that scores a
-    different model from the variant is skipped, so no pairing crosses models. A reference
-    is one deterministic run, so one scored at several seeds is skipped. A variant may carry
-    any number of training seeds, each scoring the reference's items.
+    A plain mapping is the per-backend default for every model. The per-model pair skips a
+    reference that scores a different model from the variant. A family reference from
+    ``also_by_family`` follows as a second pair, unless the first already names it, and may
+    cross models: both score the same items. A reference is one deterministic run, so one
+    scored at several seeds is skipped. A variant may carry any number of training seeds,
+    each scoring the reference's items.
     """
     if not isinstance(references, References):
         references = References(default=references)
@@ -195,51 +214,102 @@ def resolve_pairs(
     models = _model_by_variant(tidy)
     for _, subset in tidy.groupby(["variant_name", "task_name"], sort=False):
         first = subset.iloc[0]
-        variant = str(first["variant_name"])
-        task = str(first["task_name"])
-        backend = str(first["backend"])
-        model = str(first["model_id"])
-        reference = references.for_variant(backend, model)
-        if reference is None:
-            skipped.append(Skipped(variant, task, f"no reference configured for backend {backend}"))
-            continue
-        if variant == reference:
-            skipped.append(Skipped(variant, task, "is the reference for its backend"))
-            continue
-        if (reference, task) not in seeds:
-            skipped.append(
-                Skipped(variant, task, f"reference {reference} has no row on task {task}")
-            )
-            continue
-        if models[(reference, task)] != model:
-            skipped.append(
-                Skipped(
-                    variant,
-                    task,
-                    f"reference {reference} scores {models[(reference, task)]}, not {model}",
-                )
-            )
-            continue
-        if len(seeds[(reference, task)]) != 1:
-            skipped.append(
-                Skipped(
-                    variant,
-                    task,
-                    f"reference {reference} is scored at seeds "
-                    f"{sorted(seeds[(reference, task)])}; a reference is one deterministic run",
-                )
-            )
-            continue
-        pairs.append(
-            VariantPair(
-                variant=variant,
-                reference=reference,
-                task=task,
-                backend=backend,
-                track=str(first["track"]),
-            )
+        group = _Group(
+            variant=str(first["variant_name"]),
+            task=str(first["task_name"]),
+            backend=str(first["backend"]),
+            track=str(first["track"]),
+            model=str(first["model_id"]),
         )
+        primary = _primary_pair(
+            group,
+            references.for_variant(group.backend, group.model),
+            seeds=seeds,
+            models=models,
+        )
+        outcomes = [primary]
+        extra = references.family_reference(str(first["family"]), group.backend)
+        paired = isinstance(primary, VariantPair) and primary.reference == extra
+        if extra is not None and extra != group.variant and not paired:
+            outcomes.append(_family_pair(group, extra, seeds=seeds, models=models))
+        for outcome in outcomes:
+            if isinstance(outcome, VariantPair):
+                pairs.append(outcome)
+            else:
+                skipped.append(outcome)
     return pairs, skipped
+
+
+@dataclass(frozen=True, slots=True)
+class _Group:
+    """One (variant, task) group of the tidy frame."""
+
+    variant: str
+    task: str
+    backend: str
+    track: str
+    model: str
+
+    def pair(self, reference: str, *, crosses_model: bool = False) -> VariantPair:
+        return VariantPair(
+            variant=self.variant,
+            reference=reference,
+            task=self.task,
+            backend=self.backend,
+            track=self.track,
+            crosses_model=crosses_model,
+        )
+
+
+def _primary_pair(
+    group: _Group,
+    reference: str | None,
+    *,
+    seeds: Mapping[tuple[str, str], frozenset[int]],
+    models: Mapping[tuple[str, str], str],
+) -> VariantPair | Skipped:
+    variant, task = group.variant, group.task
+    if reference is None:
+        return Skipped(variant, task, f"no reference configured for backend {group.backend}")
+    if variant == reference:
+        return Skipped(variant, task, "is the reference for its backend")
+    if (reference, task) not in seeds:
+        return Skipped(variant, task, f"reference {reference} has no row on task {task}")
+    if models[(reference, task)] != group.model:
+        return Skipped(
+            variant,
+            task,
+            f"reference {reference} scores {models[(reference, task)]}, not {group.model}",
+        )
+    if len(seeds[(reference, task)]) != 1:
+        return Skipped(
+            variant, task, _several_seeds("reference", reference, seeds[(reference, task)])
+        )
+    return group.pair(reference)
+
+
+def _family_pair(
+    group: _Group,
+    reference: str,
+    *,
+    seeds: Mapping[tuple[str, str], frozenset[int]],
+    models: Mapping[tuple[str, str], str],
+) -> VariantPair | Skipped:
+    variant, task = group.variant, group.task
+    if (reference, task) not in seeds:
+        return Skipped(variant, task, f"family reference {reference} has no row on task {task}")
+    if len(seeds[(reference, task)]) != 1:
+        return Skipped(
+            variant, task, _several_seeds("family reference", reference, seeds[(reference, task)])
+        )
+    return group.pair(reference, crosses_model=models[(reference, task)] != group.model)
+
+
+def _several_seeds(kind: str, reference: str, seeds: frozenset[int]) -> str:
+    return (
+        f"{kind} {reference} is scored at seeds {sorted(seeds)}; a reference is one "
+        f"deterministic run"
+    )
 
 
 def pair_significance(
@@ -500,6 +570,7 @@ def to_frame(results: Sequence[PairSignificance]) -> pd.DataFrame:
             "task": item.pair.task,
             "backend": item.pair.backend,
             "track": item.pair.track,
+            "crosses_model": item.pair.crosses_model,
             "n_items": item.n_items,
             "n_bins": item.n_bins,
             "delta_accuracy": item.delta_accuracy.point,

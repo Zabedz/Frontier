@@ -1,6 +1,6 @@
 """Backend dispatch: the logit provider and the latency probe for a variant. Smoke mode
 collapses the GPU-only backends (vLLM, llama.cpp) onto the HF provider; torchao runs on CPU,
-so smoke exercises its quantised path.
+so smoke exercises its quantised path. A distill variant serves its trained student on hf.
 """
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ from frontier.backends.hf import HFLogitProvider
 from frontier.backends.llama_cpp import LlamaCppLogitProvider
 from frontier.backends.torchao import ADAPTER_FILE, TorchaoLogitProvider
 from frontier.backends.vllm import VllmLogitProvider
+from frontier.distill.paths import require_student
+from frontier.distill.spec import SERVED_WEIGHT_DTYPE, student_model
 from frontier.eval.provider import LogitProvider
 from frontier.latency.native import NativeLlamaCppLatency, NativeVllmLatency
 from frontier.latency.rig import default_latency
@@ -36,9 +38,25 @@ def build_provider(
     """Pick the logit provider for a variant's ``backend.inference_backend``.
 
     ``hf`` covers the bnb variants too, which the provider branches on off ``weight_dtype``.
-    ``vllm`` serves the base model directly for the FP16 gate, which has no ``quant``.
+    ``vllm`` serves the base model directly for the FP16 gate, which has no ``quant``. A
+    distill variant serves the student trained for ``seed`` in every mode, and raises when it
+    is missing or the variant names a backend other than ``hf`` at fp16.
     """
     inference_backend = backend["inference_backend"]
+    if variant.family == "distill":
+        if inference_backend != "hf" or backend["weight_dtype"] != SERVED_WEIGHT_DTYPE:
+            raise ValueError(
+                f"distill variant {variant.name!r} names {inference_backend!r} at "
+                f"{backend['weight_dtype']!r}; a trained student is served on hf at "
+                f"{SERVED_WEIGHT_DTYPE!r}, the dtype it was saved and scored in"
+            )
+        student = require_student(variant, root=checkpoints_root, seed=seed, mode=mode)
+        return HFLogitProvider(
+            model_id=str(student),
+            device=device,
+            weight_dtype=str(backend["weight_dtype"]),
+            revision=student_model(variant).revision,
+        )
     if inference_backend == "torchao":
         return _torchao_provider(
             variant, backend, device=device, checkpoints_root=checkpoints_root, seed=seed

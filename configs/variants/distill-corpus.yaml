@@ -1,0 +1,26 @@
+name: distill-corpus
+family: distill
+track: A
+model:                       # the teacher builds the shared cache; the loss never reads it
+  model_id: Qwen/Qwen2.5-3B-Instruct
+  student_id: Qwen/Qwen2.5-0.5B-Instruct
+backend:
+  inference_backend: hf
+  weight_dtype: fp16
+  kv_cache_dtype: fp16
+  gpu_offload_layers: -1
+distill:
+  mode: corpus_label         # cross-entropy on the corpus's own next token
+  top_k: 64                  # names the shared cache, so the rows match the other arms
+  corpus: fineweb_edu
+  train_tokens: 30000000
+  epochs: 1
+  seq_len: 1024
+  micro_batch_size: 4
+  grad_accum: 4
+  learning_rate: 1.0e-5
+  warmup_fraction: 0.03
+eval:
+  seeds: [0, 1, 2]
+# The control: fine-tuning an instruct model on web text moves its calibration with any
+# targets, and this arm measures that share.
