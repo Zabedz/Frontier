@@ -543,6 +543,20 @@ def _interval(point: float, low: float, high: float, *, places: int = 4) -> str:
     return f"{point:+.{places}f} [{low:+.{places}f}, {high:+.{places}f}]"
 
 
+def _excess_verdict(item: PairSignificance) -> str:
+    if item.excess_withheld:
+        gaps = " / ".join(f"{gap:+.4f}" for gap in item.variant_gaps)
+        return (
+            f"excess damage withheld: conf - acc is {item.reference_gap:+.4f} for the "
+            f"reference and {gaps} for the variant, so the error changes sign; read d ECE, "
+            f"d confidence, d AUROC and the repair residual"
+        )
+    excess = _verdict_cell(item.verdict_interval("excess_damage"))
+    if item.calibration_damaged:
+        return f"calibration damaged beyond the accuracy loss, excess {excess}"
+    return f"no calibration damage beyond the accuracy loss, excess {excess}"
+
+
 def _summarise_significance(
     found: list[PairSignificance], skipped: list[Skipped], destination: Path | None
 ) -> None:
@@ -572,7 +586,9 @@ def _summarise_significance(
             else f"{ratio.point:+.2f} (not estimable)"
         )
         cells = [
-            _verdict_cell(item.verdict_interval(quantity))
+            "withheld"
+            if quantity == "excess_damage" and item.excess_withheld
+            else _verdict_cell(item.verdict_interval(quantity))
             for quantity in (
                 "delta_accuracy",
                 "delta_confidence",
@@ -591,13 +607,7 @@ def _summarise_significance(
             "they still understate run-to-run spread"
         )
     for item in found:
-        excess = _verdict_cell(item.verdict_interval("excess_damage"))
-        verdict = (
-            f"calibration damaged beyond the accuracy loss, excess {excess}"
-            if item.calibration_damaged
-            else f"no calibration damage beyond the accuracy loss, excess {excess}"
-        )
-        _console.print(f"  {item.pair.label}: {verdict}")
+        _console.print(f"  {item.pair.label}: {_excess_verdict(item)}")
         if item.discrimination_moved:
             auroc = _verdict_cell(item.verdict_interval("delta_auroc"))
             _console.print(f"    confidence ranks right against wrong differently: {auroc}")

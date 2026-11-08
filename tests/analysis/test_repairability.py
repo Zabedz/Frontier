@@ -67,6 +67,7 @@ def _sidecar(probs: ProbMatrix, gold: LabelArray, qids: list[str]) -> Prediction
         predicted=predicted,
         options=pad_option_probs(list(probs)),
         qid=np.asarray(qids, dtype=np.str_),
+        order_probs=None,
     )
 
 
@@ -293,6 +294,7 @@ def test_check_alignment_falls_back_to_length_without_ids() -> None:
         np.zeros(3, dtype=np.intp),
         None,
         None,
+        order_probs=None,
     )
     long = PredictionRows(
         np.zeros(4),
@@ -301,6 +303,7 @@ def test_check_alignment_falls_back_to_length_without_ids() -> None:
         np.zeros(4, dtype=np.intp),
         None,
         None,
+        order_probs=None,
     )
     check_alignment(pair, short, short, half="report")
     with pytest.raises(NotRecalibratableError, match="report halves differ in length"):
@@ -345,6 +348,7 @@ def test_a_sidecar_with_ids_but_no_distributions_is_skipped_in_the_pair_layer(
             predicted=predicted,
             options=None,
             qid=np.asarray([f"q{index}" for index in range(N_ITEMS)], dtype=np.str_),
+            order_probs=None,
         ),
         root=root,
         key=predictions_key("1" * 64, 0, "mmlu"),

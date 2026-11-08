@@ -19,6 +19,7 @@ from frontier.analysis.holdout import split as split_rows
 from frontier.io.predictions import (
     MissingSidecarError,
     OptionProbs,
+    OrderTensor,
     PredictionRows,
     ProbMatrix,
     QidArray,
@@ -322,7 +323,25 @@ def _concat_predictions(pieces: list[PredictionRows]) -> PredictionRows:
         predicted=np.concatenate([piece.predicted for piece in pieces]),
         options=_concat_options(pieces),
         qid=_concat_qid(pieces),
+        order_probs=_concat_order_probs(pieces),
     )
+
+
+def _concat_order_probs(pieces: list[PredictionRows]) -> OrderTensor | None:
+    """Pool the per-order tensors, re-padding to the widest seed, as ``_concat_options``."""
+    seen: list[OrderTensor] = []
+    for piece in pieces:
+        if piece.order_probs is None:
+            return None
+        seen.append(piece.order_probs)
+    width = max(item.shape[1] for item in seen)
+    grown: list[OrderTensor] = []
+    for item in seen:
+        padded = np.zeros((item.shape[0], width, width), dtype=np.float64)
+        padded[:, : item.shape[1], : item.shape[2]] = item
+        grown.append(padded)
+    pooled: OrderTensor = np.concatenate(grown)
+    return pooled
 
 
 def _concat_qid(pieces: list[PredictionRows]) -> QidArray | None:

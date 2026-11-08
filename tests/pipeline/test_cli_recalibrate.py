@@ -61,6 +61,7 @@ def _seeded_store(root: Path) -> None:
             predicted=predicted,
             options=pad_option_probs(list(probs)),
             qid=np.asarray([f"q{index}" for index in range(N_ITEMS)], dtype=np.str_),
+            order_probs=None,
         ),
         root=root,
         key=predictions_key("a" * 64, 0, "mmlu"),

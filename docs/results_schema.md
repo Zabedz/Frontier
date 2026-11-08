@@ -67,12 +67,15 @@ holding the per-item signal the row's scalars cannot carry.
 | `predicted` | int64 | argmax option index |
 | `probs` | list\<double\> | the answer-letter distribution, stored at the item's true option count |
 | `qid` | string | dataset item id; the recalibration split is keyed on it |
+| `order_probs` | list\<double\> | cyclic scoring only: n*n values, row k is the distribution over options in canonical order when the options are shifted by k |
 
 - `probs` is ragged, so the file holds no padding; the reader re-pads to the widest item
   and recovers each count from its list length.
-- `probs` and `qid` are null throughout for a sidecar written before those columns existed,
-  and read back as `None`. A column filled for only some items is a corrupt file and raises.
+- `probs`, `qid` and `order_probs` are null throughout for a sidecar written before those
+  columns existed, and read back as `None`. A column filled for only some items is a corrupt
+  file and raises.
 - The writer refuses a distribution that is non-finite, off the simplex, or at odds with the
-  `predicted` and `confidence` stored beside it.
+  `predicted` and `confidence` stored beside it, and per-order rows that do not pool to
+  `probs` (softmax of the mean log-probability over orders).
 - The sidecar is written before its row is appended, so a failed write leaves no row for the
   resume-skip to pass over.

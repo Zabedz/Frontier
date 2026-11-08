@@ -20,6 +20,7 @@ from frontier.eval.records import (
     FloatArray,
     IntArray,
     LabelArray,
+    OrderTensor,
     ProbMatrix,
     letters_for,
 )
@@ -57,6 +58,7 @@ class EvalOutputs:
     confidence: FloatArray  # (n_items,), == probs.max(axis=1)
     n_options: IntArray  # (n_items,), true option count per item
     robustness: PermutationRobustness | None  # None when scheme == "none"
+    order_probs: OrderTensor | None  # [i, k, j] = content j under shift k; None for "none"
 
 
 def _cyclic_display(options: tuple[str, ...], shift: int) -> tuple[str, ...]:
@@ -65,15 +67,19 @@ def _cyclic_display(options: tuple[str, ...], shift: int) -> tuple[str, ...]:
     return tuple(options[(position - shift) % n] for position in range(n))
 
 
+@dataclass(frozen=True, slots=True)
+class _CyclicScore:
+    debiased: FloatArray  # (n,), canonical content order
+    by_order: FloatArray  # (n, n), [k, j] = content j's probability under shift k
+    prior: FloatArray  # (n,), per letter position
+    consistency: float  # fraction of orders whose raw answer matches the debiased one
+    naive_flipped: bool  # the canonical-order answer differs from the debiased one
+
+
 def _score_cyclic(
     record: EvalRecord, provider: LogitProvider, candidate_ids: IntArray, *, cot: bool, eps: float
-) -> tuple[FloatArray, FloatArray, float, bool]:
-    """Score one item under all cyclic orders.
-
-    Returns the debiased canonical-order distribution, the estimated per-position prior, the
-    fraction of orders whose raw answer matched the debiased one, and whether the naive
-    canonical-order answer differs from it.
-    """
+) -> _CyclicScore:
+    """Score one item under all cyclic orders."""
     n = len(record.options)
     prompts = [
         build_prompt(record.question, _cyclic_display(record.options, k), cot=cot) for k in range(n)
@@ -89,13 +95,16 @@ def _score_cyclic(
     positions = (shifts[np.newaxis, :] + contents[:, np.newaxis]) % n  # positions[j, k] = (j+k)%n
     per_content = log_q[shifts[np.newaxis, :], positions].mean(axis=1)
     debiased = softmax(per_content)
-    prior = softmax(log_q.mean(axis=0))
 
     debiased_pick = int(np.argmax(debiased))
     raw_pick = (q.argmax(axis=1) - shifts) % n
-    consistency = float(np.mean(raw_pick == debiased_pick))
-    naive_flipped = int(raw_pick[0]) != debiased_pick
-    return debiased, prior, consistency, naive_flipped
+    return _CyclicScore(
+        debiased=debiased,
+        by_order=q[shifts[np.newaxis, :], positions].T,
+        prior=softmax(log_q.mean(axis=0)),
+        consistency=float(np.mean(raw_pick == debiased_pick)),
+        naive_flipped=int(raw_pick[0]) != debiased_pick,
+    )
 
 
 def _modal_option_count(counts: Sequence[int]) -> int:
@@ -139,7 +148,9 @@ def score_items(
 
     counts = [len(record.options) for record in records]
     n_items = len(records)
-    probs = np.zeros((n_items, max(counts)), dtype=np.float64)
+    width = max(counts)
+    probs = np.zeros((n_items, width), dtype=np.float64)
+    order_probs = np.zeros((n_items, width, width), dtype=np.float64)
     predicted = np.empty(n_items, dtype=np.intp)
     gold = np.asarray([record.gold for record in records], dtype=np.intp)
     n_options = np.asarray(counts, dtype=np.intp)
@@ -157,12 +168,12 @@ def score_items(
             )
             debiased = letter_probs(logits[0], candidate_ids)
         else:
-            debiased, prior, consistency, flipped = _score_cyclic(
-                record, provider, candidate_ids, cot=cot, eps=eps
-            )
-            priors.append(prior)
-            consistencies.append(consistency)
-            flips.append(flipped)
+            scored = _score_cyclic(record, provider, candidate_ids, cot=cot, eps=eps)
+            order_probs[i, :n, :n] = scored.by_order
+            debiased = scored.debiased
+            priors.append(scored.prior)
+            consistencies.append(scored.consistency)
+            flips.append(scored.naive_flipped)
         probs[i, :n] = debiased
         predicted[i] = int(np.argmax(debiased))
 
@@ -176,6 +187,7 @@ def score_items(
         confidence=probs.max(axis=1),
         n_options=n_options,
         robustness=robustness,
+        order_probs=None if scheme == "none" else order_probs,
     )
 
 

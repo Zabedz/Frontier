@@ -16,6 +16,7 @@ FloatArray = npt.NDArray[np.float64]  # 1-D per-item floats, or a vocab-length l
 LabelArray = npt.NDArray[np.intp]  # (n_items,), option indices
 IntArray = npt.NDArray[np.intp]  # per-item option counts, candidate token ids
 CorrectArray = npt.NDArray[np.bool_]  # (n_items,), predicted == gold
+OrderTensor = npt.NDArray[np.float64]  # (n_items, max_options, max_options), zero-padded
 
 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 MIN_OPTIONS = 2

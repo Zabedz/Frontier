@@ -75,6 +75,11 @@ class PairSignificance:
     At several seeds, ``across_seeds`` holds the intervals that also resample the seed
     copies; the verdict properties read those, since the question-only intervals are
     conditional on the copies in hand.
+
+    ``reference_gap`` and ``variant_gaps`` are mean confidence minus accuracy, the latter one
+    per seed. The excess verdict is withheld when any seed errs the other way from the
+    reference: ECE then falls as the error crosses zero, and the excess stops measuring
+    damage.
     """
 
     pair: VariantPair
@@ -88,6 +93,8 @@ class PairSignificance:
     damage_gap: ConfidenceInterval
     damage_ratio: RatioInterval
     delta_ece_sweep: dict[int, ConfidenceInterval]
+    reference_gap: float
+    variant_gaps: tuple[float, ...]
     n_seeds: int = 1
     # Per-seed point estimates as (min, max), one entry per quantity; empty at one seed.
     seed_spread: dict[str, tuple[float, float]] = field(default_factory=dict)
@@ -107,8 +114,21 @@ class PairSignificance:
         return self.verdict_interval("delta_confidence").excludes_zero
 
     @property
+    def excess_withheld(self) -> bool:
+        """Whether a variant seed's miscalibration has the opposite sign to the reference's."""
+        reference = np.sign(self.reference_gap)
+        return any(np.sign(gap) != reference for gap in self.variant_gaps)
+
+    @property
+    def variant_gap(self) -> float:
+        """Mean confidence minus accuracy, averaged over the variant's seeds."""
+        return float(np.mean(self.variant_gaps))
+
+    @property
     def calibration_damaged(self) -> bool:
-        """Whether ECE rose beyond the accuracy lost, beyond noise."""
+        """Whether ECE rose beyond the accuracy lost, beyond noise; False when withheld."""
+        if self.excess_withheld:
+            return False
         interval = self.verdict_interval("excess_damage")
         return interval.excludes_zero and interval.point > 0.0
 
@@ -400,7 +420,14 @@ def pair_significance(
         damage_gap=damage_gap,
         damage_ratio=damage_ratio,
         delta_ece_sweep=sweep,
+        reference_gap=_gap(reference_rows),
+        variant_gaps=(_gap(variant_rows),),
     )
+
+
+def _gap(rows: PredictionRows) -> float:
+    """Mean confidence minus accuracy: positive when overconfident."""
+    return float(np.mean(rows.confidence)) - float(np.mean(rows.correct))
 
 
 _SPREAD_QUANTITIES: tuple[SeededQuantity, ...] = (
@@ -489,6 +516,8 @@ def pair_significance_seeded(
             rng=rng,
         ),
         delta_ece_sweep=sweep,
+        reference_gap=_gap(reference_rows),
+        variant_gaps=tuple(_gap(rows) for rows in seed_rows),
         n_seeds=len(seeds),
         seed_spread=spread,
         across_seeds=across,
@@ -586,7 +615,12 @@ def to_frame(results: Sequence[PairSignificance]) -> pd.DataFrame:
             "excess_damage": item.excess_damage.point,
             "excess_damage_low": item.excess_damage.low,
             "excess_damage_high": item.excess_damage.high,
-            "calibration_damaged": item.calibration_damaged,
+            # Null when withheld, so a filter on this column alone cannot read it as undamaged.
+            "calibration_damaged": None if item.excess_withheld else item.calibration_damaged,
+            "excess_withheld": item.excess_withheld,
+            "reference_gap": item.reference_gap,
+            "variant_gap": item.variant_gap,
+            "variant_gaps": json.dumps(list(item.variant_gaps)),
             "delta_auroc": item.delta_auroc.point,
             "delta_auroc_low": item.delta_auroc.low,
             "delta_auroc_high": item.delta_auroc.high,

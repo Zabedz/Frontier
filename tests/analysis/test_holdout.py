@@ -33,6 +33,7 @@ def _rows(qids: list[str], *, seed: int = 0) -> PredictionRows:
         predicted=predicted,
         options=pad_option_probs([np.asarray(draw, dtype=np.float64) for draw in draws]),
         qid=np.asarray(qids, dtype=np.str_),
+        order_probs=None,
     )
 
 
@@ -99,7 +100,17 @@ def test_split_keeps_each_item_with_its_own_distribution() -> None:
 def test_a_sidecar_with_no_ids_cannot_be_split() -> None:
     rows = _rows([f"q{index}" for index in range(20)])
     with pytest.raises(NotRecalibratableError, match="no qid"):
-        split(PredictionRows(rows.confidence, rows.correct, rows.gold, rows.predicted, None, None))
+        split(
+            PredictionRows(
+                rows.confidence,
+                rows.correct,
+                rows.gold,
+                rows.predicted,
+                None,
+                None,
+                order_probs=None,
+            )
+        )
 
 
 def test_a_slice_too_small_to_fill_both_halves_is_rejected() -> None:
@@ -116,6 +127,7 @@ def test_take_on_a_sidecar_without_distributions_stays_none() -> None:
         predicted=np.zeros(3, dtype=np.intp),
         options=None,
         qid=None,
+        order_probs=None,
     )
     taken = take(rows, np.asarray([0, 2], dtype=np.intp))
     assert taken.options is None

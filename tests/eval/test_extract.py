@@ -111,3 +111,27 @@ def test_score_items_rejects_empty_input() -> None:
     provider = SentinelOracleProvider()
     with pytest.raises(ValueError, match="no records"):
         score_items([], provider)
+
+
+def test_cyclic_scoring_keeps_each_order_in_content_order() -> None:
+    gold = 2
+    prior = np.asarray([0.7, 0.1, 0.1, 0.1])
+    base = 1.0
+    provider = SentinelOracleProvider(injected_prior=list(prior), base_logit=base)
+    out = score_items([sentinel_record(4, gold=gold)], provider, scheme="cyclic")
+    assert out.order_probs is not None
+    assert out.order_probs.shape == (1, 4, 4)
+    for shift in range(4):
+        gold_position = (gold + shift) % 4
+        logits = np.log(prior) + base * (np.arange(4) == gold_position)
+        by_position = softmax(logits)
+        expected = [by_position[(content + shift) % 4] for content in range(4)]
+        assert out.order_probs[0, shift] == pytest.approx(expected)
+    pooled = softmax(np.log(out.order_probs[0]).mean(axis=0))
+    assert np.array_equal(out.probs[0], pooled)
+
+
+def test_single_order_scoring_keeps_no_orders() -> None:
+    provider = SentinelOracleProvider(injected_prior=None, base_logit=2.0)
+    out = score_items([sentinel_record(4, gold=1)], provider, scheme="none")
+    assert out.order_probs is None

@@ -33,6 +33,7 @@ from frontier.io.predictions import (
     write_predictions_rows,
 )
 from frontier.io.store import ResultStore, append_row
+from frontier.pipeline.cli import _excess_verdict
 from frontier.schema import Family, ResultRow
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "io"))
@@ -60,7 +61,13 @@ def _predictions(gold: LabelArray, *, seed: int, miscalibration: float = 0.0) ->
     correct = rng.uniform(0.0, 1.0, size=gold.shape[0]) < HIT_RATE
     predicted = np.where(correct, gold, (gold + 1) % 4).astype(np.intp)
     return PredictionRows(
-        confidence, correct.astype(np.bool_), gold, predicted, options=None, qid=None
+        confidence,
+        correct.astype(np.bool_),
+        gold,
+        predicted,
+        options=None,
+        qid=None,
+        order_probs=None,
     )
 
 
@@ -394,6 +401,7 @@ def _worse_than(rows: PredictionRows, *, bump: float = 0.25, flips: int = 8) -> 
         rows.predicted,
         options=None,
         qid=None,
+        order_probs=None,
     )
 
 
@@ -518,6 +526,10 @@ def test_to_frame_column_contract_is_stable() -> None:
         "excess_damage_low",
         "excess_damage_high",
         "calibration_damaged",
+        "excess_withheld",
+        "reference_gap",
+        "variant_gap",
+        "variant_gaps",
         "delta_auroc",
         "delta_auroc_low",
         "delta_auroc_high",
@@ -553,7 +565,13 @@ def _less_accurate_only(rows: PredictionRows, *, flips: int = 120) -> Prediction
     correct = rows.correct.copy()
     correct[np.flatnonzero(rows.correct)[:flips]] = False
     return PredictionRows(
-        rows.confidence.copy(), correct, rows.gold, rows.predicted, options=None, qid=None
+        rows.confidence.copy(),
+        correct,
+        rows.gold,
+        rows.predicted,
+        options=None,
+        qid=None,
+        order_probs=None,
     )
 
 
@@ -854,3 +872,56 @@ def test_the_family_pair_stands_when_the_per_model_reference_scores_another_mode
     assert (DISTILLED, f"reference fp16 scores {QWEN_3B}, not {QWEN_05B}") in {
         (skip.variant, skip.reason) for skip in skipped
     }
+
+
+OVER = 0.25  # pushes the fixture's mean confidence well above its hit rate
+UNDER = -0.3  # and well below it
+
+
+def test_excess_is_withheld_when_the_variant_errs_the_other_way() -> None:
+    gold = _gold()
+    reference = _predictions(gold, seed=1, miscalibration=OVER)
+    variant = _predictions(gold, seed=2, miscalibration=UNDER)
+    outcome = pair_significance(_pair(), reference, variant, n_resamples=RESAMPLES)
+    assert outcome.reference_gap > 0.0 > outcome.variant_gap
+    assert outcome.excess_withheld
+    assert not outcome.calibration_damaged
+    frame = to_frame([outcome])
+    assert bool(frame["excess_withheld"].iloc[0])
+    assert frame["calibration_damaged"].iloc[0] is None
+    assert json.loads(frame["variant_gaps"].iloc[0]) == [outcome.variant_gap]
+
+
+def test_excess_stands_when_both_sides_err_the_same_way() -> None:
+    gold = _gold()
+    reference = _predictions(gold, seed=1, miscalibration=OVER)
+    outcome = pair_significance(_pair(), reference, _worse_than(reference), n_resamples=RESAMPLES)
+    assert outcome.reference_gap > 0.0
+    assert outcome.variant_gap > 0.0
+    assert not outcome.excess_withheld
+    assert outcome.calibration_damaged
+
+
+def test_one_seed_erring_the_other_way_withholds_the_seeded_excess() -> None:
+    gold = _gold()
+    reference = _predictions(gold, seed=1, miscalibration=OVER)
+    seeds = [
+        _predictions(gold, seed=2, miscalibration=OVER),
+        _predictions(gold, seed=3, miscalibration=OVER),
+        _predictions(gold, seed=4, miscalibration=UNDER),
+    ]
+    outcome = pair_significance_seeded(_pair(), reference, seeds, n_resamples=RESAMPLES)
+    assert len(outcome.variant_gaps) == len(seeds)
+    assert outcome.variant_gap > 0.0
+    assert outcome.excess_withheld
+
+
+def test_the_cli_names_a_withheld_excess_and_both_gaps() -> None:
+    gold = _gold()
+    reference = _predictions(gold, seed=1, miscalibration=OVER)
+    variant = _predictions(gold, seed=2, miscalibration=UNDER)
+    outcome = pair_significance(_pair(), reference, variant, n_resamples=RESAMPLES)
+    text = _excess_verdict(outcome)
+    assert text.startswith("excess damage withheld")
+    assert f"{outcome.reference_gap:+.4f}" in text
+    assert f"{outcome.variant_gap:+.4f}" in text

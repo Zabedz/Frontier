@@ -95,7 +95,13 @@ def _preds(seed: int, n: int, low: float) -> PredictionRows:
     gold = rng.integers(0, 4, size=n).astype(np.intp)
     predicted = np.where(correct, gold, (gold + 1) % 4).astype(np.intp)
     return PredictionRows(
-        confidence, correct.astype(np.bool_), gold, predicted, options=None, qid=None
+        confidence,
+        correct.astype(np.bool_),
+        gold,
+        predicted,
+        options=None,
+        qid=None,
+        order_probs=None,
     )
 
 

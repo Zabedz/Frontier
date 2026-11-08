@@ -64,6 +64,7 @@ def take(rows: PredictionRows, positions: IntArray) -> PredictionRows:
         predicted=rows.predicted[positions],
         options=options,
         qid=None if rows.qid is None else rows.qid[positions],
+        order_probs=None if rows.order_probs is None else rows.order_probs[positions],
     )
 
 

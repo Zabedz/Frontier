@@ -199,6 +199,7 @@ def run(
                     predicted=out.predicted,
                     options=OptionProbs(probs=out.probs, n_options=out.n_options),
                     qid=np.asarray([record.qid for record in records], dtype=np.str_),
+                    order_probs=out.order_probs,
                 ),
                 root=results_root,
                 key=predictions_key(resolved.config_hash, seed, resolved.eval_spec.task_name),

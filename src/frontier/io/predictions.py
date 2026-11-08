@@ -10,10 +10,15 @@ recalibration needs. Probabilities are enough:
 ``log(p) = z - logZ``, and the constant cancels in the softmax, so a temperature fitted on
 stored probabilities equals one fitted on the original logits. Sidecars written before that
 column existed load with ``options=None``.
+
+A cyclic-scored sidecar also keeps each option order's distribution (``order_probs``), from
+which the pooled distribution is recomputed on write as a check. Sidecars written before
+that column existed load with ``order_probs=None``.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,12 +34,16 @@ CorrectArray = npt.NDArray[np.bool_]
 LabelArray = npt.NDArray[np.intp]
 IntArray = npt.NDArray[np.intp]  # (n_items,), true option count per item
 ProbMatrix = npt.NDArray[np.float64]  # (n_items, max_options), zero-padded
+# (n_items, max_options, max_options), [i, k, j] = content j under cyclic shift k, zero-padded
+OrderTensor = npt.NDArray[np.float64]
 QidArray = npt.NDArray[np.str_]  # (n_items,), dataset item ids
 
 PREDICTIONS_SUBDIR = "predictions"
 PROBS_COLUMN = "probs"
+ORDER_PROBS_COLUMN = "order_probs"
 QID_COLUMN = "qid"
 SIMPLEX_ATOL = 1e-6
+ORDER_TENSOR_NDIM = 3  # (n_items, orders, contents)
 
 PREDICTIONS_SCHEMA: pa.Schema = pa.schema(
     [
@@ -44,6 +53,7 @@ PREDICTIONS_SCHEMA: pa.Schema = pa.schema(
         ("predicted", pa.int64()),
         (PROBS_COLUMN, pa.list_(pa.float64())),
         (QID_COLUMN, pa.string()),
+        (ORDER_PROBS_COLUMN, pa.list_(pa.float64())),
     ]
 )
 
@@ -75,7 +85,8 @@ class PredictionRows:
 
     Every array has length ``n_items``. ``options`` and ``qid`` are ``None`` for a sidecar
     written before those columns existed, and neither carries a default, so a producer
-    stating them is a deliberate act.
+    stating them is a deliberate act. ``order_probs`` is ``None`` for an older sidecar or a
+    row scored in one order only; it requires ``options``, whose ``n_options`` it shares.
 
     ``qid`` is the dataset's own item id. It cannot be recovered later without re-running,
     and the subject-level label-noise, raw-vs-redux, and answer-channel-agreement analyses
@@ -88,6 +99,7 @@ class PredictionRows:
     predicted: LabelArray
     options: OptionProbs | None
     qid: QidArray | None
+    order_probs: OrderTensor | None
 
 
 def predictions_key(config_hash: str, seed: int, task_name: str) -> str:
@@ -113,7 +125,8 @@ def write_predictions_rows(rows: PredictionRows, *, root: Path, key: str) -> Pat
 
     Raises ``ValueError`` when the arrays disagree in length, when an option count is out of
     range, when a distribution does not sum to 1, or when the stored distribution disagrees
-    with ``predicted`` or ``confidence``.
+    with ``predicted`` or ``confidence``, or when per-order distributions are off the
+    simplex or do not pool to the stored one.
     """
     _check_lengths(rows)
     columns: dict[str, object] = {
@@ -131,6 +144,16 @@ def write_predictions_rows(rows: PredictionRows, *, root: Path, key: str) -> Pat
         counts = rows.options.n_options
         columns[PROBS_COLUMN] = [
             rows.options.probs[index, : counts[index]].astype(np.float64).tolist()
+            for index in range(counts.shape[0])
+        ]
+    if rows.order_probs is None:
+        columns[ORDER_PROBS_COLUMN] = [None] * n_items
+    else:
+        _check_order_probs(rows)
+        assert rows.options is not None  # _check_order_probs rejects missing options
+        counts = rows.options.n_options
+        columns[ORDER_PROBS_COLUMN] = [
+            rows.order_probs[index, : counts[index], : counts[index]].ravel().tolist()
             for index in range(counts.shape[0])
         ]
     path = predictions_path(root, key)
@@ -154,6 +177,7 @@ def read_predictions_path(path: Path) -> PredictionRows:
     distribution for any item.
     """
     table = pq.read_table(path)
+    options = _read_options(table)
     return PredictionRows(
         confidence=np.asarray(
             table.column("confidence").to_numpy(zero_copy_only=False), dtype=np.float64
@@ -163,8 +187,9 @@ def read_predictions_path(path: Path) -> PredictionRows:
         predicted=np.asarray(
             table.column("predicted").to_numpy(zero_copy_only=False), dtype=np.intp
         ),
-        options=_read_options(table),
+        options=options,
         qid=_read_qid(table),
+        order_probs=_read_order_probs(table, options),
     )
 
 
@@ -175,6 +200,41 @@ def pad_option_probs(rows: list[FloatArray]) -> OptionProbs:
     for index, row in enumerate(rows):
         probs[index, : row.shape[0]] = row
     return OptionProbs(probs=probs, n_options=counts)
+
+
+def _read_order_probs(table: pa.Table, options: OptionProbs | None) -> OrderTensor | None:
+    if ORDER_PROBS_COLUMN not in table.column_names:
+        return None
+    stored = table.column(ORDER_PROBS_COLUMN).to_pylist()
+    missing = [index for index, item in enumerate(stored) if item is None]
+    if len(missing) == len(stored):
+        return None
+    if missing:
+        raise CorruptSidecarError(
+            f"sidecar stores per-order distributions for some items but not {len(missing)} "
+            f"others (first at index {missing[0]}); the writer is all-or-nothing, so this "
+            f"file is corrupt"
+        )
+    if options is None:
+        raise CorruptSidecarError("sidecar stores per-order distributions without probs")
+    counts = options.n_options
+    sides = [math.isqrt(len(item)) for item in stored]
+    bad = [
+        index
+        for index, item in enumerate(stored)
+        if sides[index] ** 2 != len(item) or sides[index] != counts[index]
+    ]
+    if bad:
+        raise CorruptSidecarError(
+            f"item {bad[0]} stores {len(stored[bad[0]])} per-order values beside "
+            f"{counts[bad[0]]} options"
+        )
+    width = max(sides)
+    tensor: OrderTensor = np.zeros((len(stored), width, width), dtype=np.float64)
+    for index, item in enumerate(stored):
+        side = sides[index]
+        tensor[index, :side, :side] = np.asarray(item, dtype=np.float64).reshape(side, side)
+    return tensor
 
 
 def _read_qid(table: pa.Table) -> QidArray | None:
@@ -221,6 +281,8 @@ def _check_lengths(rows: PredictionRows) -> None:
         lengths["n_options"] = rows.options.n_options.shape[0]
     if rows.qid is not None:
         lengths["qid"] = rows.qid.shape[0]
+    if rows.order_probs is not None:
+        lengths["order_probs"] = rows.order_probs.shape[0]
     if len(set(lengths.values())) != 1:
         raise ValueError(f"prediction arrays disagree in length: {lengths}")
 
@@ -260,4 +322,40 @@ def _check_options(rows: PredictionRows) -> None:
             raise ValueError(
                 f"item {index} distribution peaks at {float(row.max())} but confidence is "
                 f"{float(rows.confidence[index])}"
+            )
+
+
+def _check_order_probs(rows: PredictionRows) -> None:
+    """Reject per-order distributions that do not pool to the stored distribution.
+
+    Pooling is the softmax of each content's mean log-probability over the orders, as in
+    ``eval.extract``.
+    """
+    assert rows.order_probs is not None  # narrowed by the caller
+    if rows.options is None:
+        raise ValueError("per-order distributions need the pooled distribution beside them")
+    tensor = rows.order_probs
+    counts = rows.options.n_options
+    if tensor.ndim != ORDER_TENSOR_NDIM or tensor.shape[1] != tensor.shape[2]:
+        raise ValueError(f"order_probs must be (n_items, w, w), got shape {tensor.shape}")
+    if int(counts.max()) > tensor.shape[1]:
+        raise ValueError(
+            f"order_probs width {tensor.shape[1]} is below the widest item, {int(counts.max())}"
+        )
+    for index in range(counts.shape[0]):
+        n = int(counts[index])
+        block = tensor[index, :n, :n]
+        if not bool(np.isfinite(block).all()) or bool((block <= 0.0).any()):
+            raise ValueError(f"item {index} per-order distribution is not positive: {block}")
+        totals = block.sum(axis=1)
+        if bool((np.abs(totals - 1.0) > SIMPLEX_ATOL).any()):
+            raise ValueError(f"item {index} per-order distributions sum to {totals}, expected 1")
+        pooled_logits = np.log(block).mean(axis=0)
+        pooled = np.exp(pooled_logits - pooled_logits.max())
+        pooled /= pooled.sum()
+        stored = rows.options.probs[index, :n]
+        if bool((np.abs(pooled - stored) > SIMPLEX_ATOL).any()):
+            raise ValueError(
+                f"item {index} per-order distributions pool to {pooled}, but the stored "
+                f"distribution is {stored}"
             )
