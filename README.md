@@ -23,25 +23,39 @@ BlueDot Impact.
 
 ## Status
 
-Six rows banked on Qwen2.5-3B, 2000 MMLU items:
+All 14,042 MMLU test questions, Qwen2.5-3B-Instruct and Qwen2.5-0.5B-Instruct. Each arm is
+paired with its own model's fp16 reference; multi-run arms resample runs and questions.
+Excess damage is d ECE + d accuracy, the ECE rise beyond the accuracy lost; damage is claimed
+when its 95% interval lies above zero.
 
-| variant | backend | accuracy | ECE |
-|---|---|---|---|
-| gguf-q8_0 | llama.cpp | 0.6485 | 0.2663 |
-| fp16 | HF | 0.6470 | 0.2687 |
-| gguf-q5_k_m | llama.cpp | 0.6430 | 0.2690 |
-| int8-weightonly | HF (bnb) | 0.6365 | 0.2832 |
-| int4-nf4 | HF (bnb) | 0.6235 | 0.2885 |
-| gguf-q4_k_m | llama.cpp | 0.6210 | 0.2908 |
+| arm | runs | d accuracy | d ECE | excess damage | d AUROC | residual gap after one temperature |
+|---|---|---|---|---|---|---|
+| int4 GPTQ, 3B | 3 calibration draws | -0.015 | +0.016 | +0.0009 [-0.0014, +0.0032] | -0.006 | +0.003 [-0.004, +0.009] |
+| int4 AWQ, 3B | 3 calibration draws | -0.021 | +0.019 | -0.0022 [-0.0066, +0.0026] | -0.005 | +0.013 [+0.004, +0.020] |
+| 3-bit QAT + LoRA, 3B | 3 training runs | -0.087 | -0.054 | withheld | -0.072 | +0.025 [+0.008, +0.037] |
+| 3-bit full QAT, 0.5B | 3 training runs | -0.149 | -0.087 | withheld | -0.101 | -0.014 [-0.026, -0.004] |
+| distill, soft labels, 0.5B | 3 training runs | -0.000 | -0.055 | -0.055 [-0.059, -0.051] | +0.003 | -0.005 [-0.014, +0.004] |
+| distill, hard labels, 0.5B | 3 training runs | -0.002 | +0.005 | +0.003 [-0.004, +0.009] | +0.003 | -0.003 [-0.013, +0.007] |
+| distill, corpus control, 0.5B | 3 training runs | -0.083 | -0.021 | withheld | -0.040 | -0.004 [-0.018, +0.007] |
 
-- FP16 baseline: 95% CI [0.626, 0.667], Brier 0.601, matching Qwen's published score
-  near 65%.
-- q8_0 and q5_k_m are lossless on both axes.
-- At 4 bits ECE degrades about twice as fast as accuracy in relative terms, with
-  bitsandbytes NF4 and llama.cpp q4_k_m agreeing independently.
-- These are point estimates. Remaining: the vLLM batch (GPTQ, AWQ, W8A8, FP16 fidelity
-  gate), paired bootstrap CIs on every banked pair, and the QAT and distillation arms.
-- Test suite: 349 passing, 14 GPU-gated skips, under ruff and mypy strict.
+- The fp16 3B reference scores 0.656, near Qwen's published figure, at mean confidence
+  0.919: overconfident, ECE 0.263.
+- int4 GPTQ and AWQ cost 1.5 and 2.1 points of accuracy and leave confidence where it was, so
+  ECE rises by the accuracy lost. AWQ keeps a residual after one fitted temperature.
+- The earlier "ECE degrades about twice as fast as accuracy" reading compared relative
+  changes. With confidence fixed that ratio equals the reference's accuracy over its ECE
+  (2.5), so it measures the reference.
+- 3-bit PTQ takes both models to near chance (3B 0.259, 0.5B 0.296).
+- 3B QAT recovers 78% of the accuracy PTQ lost and turns underconfident (confidence 0.36 at
+  accuracy 0.57). Excess damage is withheld wherever the error changes sign. Scored one option
+  order at a time the QAT model is close to calibrated but answers A 59% of the time;
+  averaging over the four orders raises its accuracy and leaves its confidence flat. AUROC and
+  the residual after one temperature both record damage.
+- Soft-label distillation lowers the 0.5B's ECE at unchanged accuracy; one temperature gives
+  the original 0.5B the same residual.
+- Not built: the chain-of-thought arm. The bitsandbytes and llama.cpp arms are single
+  2,000-question rows.
+- Test suite: 692 passing, 22 gated skips, under ruff and mypy strict.
 
 ## Setup
 
@@ -80,7 +94,7 @@ uv run frontier plot --results results --plots-dir plots
 |---|---|
 | `frontier run` | `--eval` (a profile under `configs/evals/`), `--skip-latency`, `--skip-predictions` |
 | `frontier plot` | `--x memory\|latency\|cost_inv`, `--color-by family\|track`, `--figures` |
-| `frontier-quantize` | pod-only; produces the Track B GPTQ / AWQ / W8A8 / GGUF checkpoints |
+| `frontier-quantize` | pod-only; `run` writes one checkpoint per seed (GPTQ, AWQ, W8A8, GGUF, QAT, distilled students), `cache` builds a distill variant's teacher cache |
 
 ## Layout
 
